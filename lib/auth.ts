@@ -1,0 +1,23 @@
+import "server-only";
+import { redirect } from "next/navigation";
+import { createClient } from "./supabase/server";
+import type { Profile } from "./types";
+
+/** Logged-in user + their profile, or redirect to /login. */
+export async function getSession() {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+  // select("*") so login keeps working even if a newer column (e.g. branch) hasn't been migrated yet.
+  const { data, error } = await supabase.from("profiles").select("*").eq("id", user.id).single();
+  if (error) console.error("Loading profile failed:", error.message);
+  if (!data) redirect("/login?error=no-profile");
+  const profile: Profile = { ...data, branch: data.branch ?? null };
+  return { supabase, user, profile };
+}
+
+export async function requireStaff() {
+  const s = await getSession();
+  if (s.profile.role === "driver") redirect("/driver");
+  return s;
+}

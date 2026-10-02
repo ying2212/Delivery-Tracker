@@ -1,0 +1,34 @@
+"use client";
+
+import { useTransition } from "react";
+import { assignDriver } from "@/app/actions";
+
+export function AssignDriver({
+  doId,
+  driverId,
+  drivers,
+}: {
+  doId: string;
+  driverId: string | null;
+  drivers: { id: string; full_name: string }[];
+}) {
+  const [pending, start] = useTransition();
+  return (
+    <select
+      disabled={pending}
+      defaultValue={driverId ?? ""}
+      onChange={(e) => {
+        const fd = new FormData();
+        fd.set("do_id", doId);
+        fd.set("driver_id", e.target.value);
+        start(() => assignDriver(fd));
+      }}
+      className="input py-1.5 text-xs"
+    >
+      <option value="">Choose driver…</option>
+      {drivers.map((d) => (
+        <option key={d.id} value={d.id}>{d.full_name}</option>
+      ))}
+    </select>
+  );
+}

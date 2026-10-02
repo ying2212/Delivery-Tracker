@@ -1,0 +1,6 @@
+so_no,so_date,debtor_code,customer_name,phone,address,branch,remarks,item_code,description,uom,qty
+SO-000101,02/10/2026,300-A001,Ah Seng Hardware,012-345 6789,"12 Jalan Besar, Taman Maju",NB2,Call before arrival,CEM-50,Cement 50kg,BAG,40
+SO-000101,02/10/2026,300-A001,Ah Seng Hardware,012-345 6789,"12 Jalan Besar, Taman Maju",NB2,Call before arrival,PVC-4,PVC pipe 4 inch,PCS,25
+SO-000102,02/10/2026,300-B014,Borneo Build Sdn Bhd,+6019-888 1234,"Lot 5, Jalan Industri 2, Kawasan Perindustrian",NB2,,PAINT-W5,White paint 5L,TIN,12
+SO-000103,01/10/2026,300-C007,Chong Renovation,088-123456 / 016-7778899,"B-3, Pusat Perniagaan Jaya",Branch A,,NAIL-3,Steel nails 3 inch,KG,15
+SO-000103,01/10/2026,300-C007,Chong Renovation,088-123456 / 016-7778899,"B-3, Pusat Perniagaan Jaya",Branch A,,TILE-60,Floor tile 60x60,BOX,30
