@@ -58,6 +58,7 @@ export async function createDeliveryOrder(formData: FormData) {
   const { supabase } = await requireStaff();
   const soId = String(formData.get("so_id"));
   const driverId = String(formData.get("driver_id") || "") || null;
+  const branch = String(formData.get("branch") || "").trim() || null;
 
   const { data: so } = await supabase.from("sales_orders").select("*").eq("id", soId).single();
   if (!so) throw new Error("Sales order not found");
@@ -77,6 +78,7 @@ export async function createDeliveryOrder(formData: FormData) {
       contact_phone: String(formData.get("contact_phone") || "") || so.phone,
       address: String(formData.get("address") || "") || so.address,
       delivery_date: String(formData.get("delivery_date")),
+      branch,
       driver_id: driverId,
       status: driverId ? "assigned" : "pending",
     })
@@ -144,7 +146,7 @@ export async function assignDriver(formData: FormData) {
 /**
  * Drops a DO into a driver's trip and saves the stop order of that trip.
  * `orderedIds` is the full order of the target trip after the drop.
- * Staff with a branch can only touch drivers in their own branch.
+ * Branch is only a default view, so staff can plan trips in any branch.
  */
 export async function moveToTrip(input: {
   doId: string;
@@ -153,22 +155,19 @@ export async function moveToTrip(input: {
   tripNo: number;
   orderedIds: string[];
 }) {
-  const { supabase, profile } = await requireStaff();
+  const { supabase } = await requireStaff();
   const { doId, driverId, date, tripNo, orderedIds } = input;
   if (!Number.isInteger(tripNo) || tripNo < 1) throw new Error("Invalid trip");
 
-  const { data: driver } = await supabase.from("profiles").select("full_name, role, branch").eq("id", driverId).single();
+  const { data: driver } = await supabase.from("profiles").select("full_name, role").eq("id", driverId).single();
   if (!driver || driver.role !== "driver") throw new Error("Driver not found");
-  if (profile.branch && driver.branch !== profile.branch) throw new Error("That driver is not in your branch.");
 
   const { data: current } = await supabase
     .from("delivery_orders")
-    .select("so_id, status, driver_id, delivery_date, trip_no, driver:profiles!delivery_orders_driver_id_fkey(branch)")
+    .select("so_id, status, driver_id, delivery_date, trip_no")
     .eq("id", doId)
     .single();
   if (!current) throw new Error("Delivery order not found");
-  const fromBranch = (current.driver as unknown as { branch: string | null } | null)?.branch ?? null;
-  if (profile.branch && current.driver_id && fromBranch !== profile.branch) throw new Error("That order is not in your branch.");
   if (current.status === "delivered" || current.status === "out_for_delivery") {
     throw new Error("This order is already on the road or delivered and can't be moved.");
   }

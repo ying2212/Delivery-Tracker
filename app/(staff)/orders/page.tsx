@@ -16,24 +16,40 @@ type Row = {
   so_no: string;
   so_date: string;
   customer_name: string;
+  address: string | null;
   branch: string | null;
   status: SoStatus;
   delivery_orders: { status: DoStatus }[];
 };
 
-export default async function OrdersPage({ searchParams }: { searchParams: Promise<{ q?: string; status?: string }> }) {
-  const { q = "", status = "" } = await searchParams;
+/** Builds "/orders?…" from the filters, dropping empty ones ("All" must not fall back to the current URL). */
+function ordersHref(params: Record<string, string>) {
+  const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v)).toString();
+  return qs ? `/orders?${qs}` : "/orders";
+}
+
+export default async function OrdersPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ q?: string; loc?: string; status?: string; from?: string; to?: string }>;
+}) {
+  const { q = "", loc = "", status = "", from = "", to: rawTo = "" } = await searchParams;
+  const to = rawTo && (!from || rawTo >= from) ? rawTo : "";
   const { supabase } = await requireStaff();
 
   let query = supabase
     .from("sales_orders")
-    .select("id, so_no, so_date, customer_name, branch, status, delivery_orders(status)")
+    .select("id, so_no, so_date, customer_name, address, branch, status, delivery_orders(status)")
     .order("so_date", { ascending: false })
     .order("so_no", { ascending: false })
     .limit(200);
   const term = q.replace(/[,()%]/g, " ").trim();
   if (term) query = query.or(`so_no.ilike.%${term}%,customer_name.ilike.%${term}%`);
+  const locTerm = loc.replace(/[,()%]/g, " ").trim();
+  if (locTerm) query = query.or(`address.ilike.%${locTerm}%,branch.ilike.%${locTerm}%`);
   if (status) query = query.eq("status", status);
+  if (from) query = query.gte("so_date", from);
+  if (to) query = query.lte("so_date", to);
   const { data } = await query;
   const orders = (data ?? []) as Row[];
 
@@ -52,7 +68,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
           {TABS.map((t) => (
             <Link
               key={t.value}
-              href={{ query: { ...(q && { q }), ...(t.value && { status: t.value }) } }}
+              href={ordersHref({ q, loc, status: t.value, from, to })}
               className={`rounded-lg px-3 py-1.5 text-sm font-medium ${
                 status === t.value ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"
               }`}
@@ -61,16 +77,31 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
             </Link>
           ))}
         </div>
-        <form className="flex-1 min-w-56">
+        <form className="flex min-w-56 flex-1 flex-wrap items-center gap-2">
           {status && <input type="hidden" name="status" value={status} />}
-          <input name="q" defaultValue={q} placeholder="Search SO no. or customer…" className="input" />
+          <input name="q" defaultValue={q} placeholder="Search SO no. or customer…" className="input min-w-48 flex-1" />
+          <input name="loc" defaultValue={loc} placeholder="Search location…" className="input min-w-40 flex-1" />
+          <label className="flex items-center gap-1.5 text-sm text-slate-500">
+            From <input type="date" name="from" defaultValue={from} className="input w-auto" />
+          </label>
+          <label className="flex items-center gap-1.5 text-sm text-slate-500">
+            To <input type="date" name="to" defaultValue={to} className="input w-auto" />
+          </label>
+          <button className="btn-secondary">Go</button>
+          {(q || loc || from || to) && (
+            <Link href={ordersHref({ status })} className="text-sm text-brand-700 hover:underline">Clear</Link>
+          )}
         </form>
       </div>
 
       <div className="card overflow-hidden">
         {orders.length === 0 ? (
           <p className="p-10 text-center text-sm text-slate-500">
-            No sales orders yet. <Link href="/import" className="font-medium text-brand-700">Import a CSV</Link> or create one.
+            {q || loc || status || from || to ? (
+              "No sales orders match these filters."
+            ) : (
+              <>No sales orders yet. <Link href="/import" className="font-medium text-brand-700">Import a CSV</Link> or create one.</>
+            )}
           </p>
         ) : (
           <table className="w-full text-sm">
@@ -78,6 +109,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
               <tr>
                 <th className="px-4 py-3">SO no.</th>
                 <th className="px-4 py-3">Customer</th>
+                <th className="hidden px-4 py-3 md:table-cell">Location</th>
                 <th className="hidden px-4 py-3 md:table-cell">Date</th>
                 <th className="hidden px-4 py-3 lg:table-cell">Branch</th>
                 <th className="px-4 py-3">Status</th>
@@ -91,6 +123,9 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
                     <Link href={`/orders/${o.id}`} className="text-brand-700 group-hover:underline">{o.so_no}</Link>
                   </td>
                   <td className="px-4 py-3">{o.customer_name}</td>
+                  <td className="hidden max-w-64 px-4 py-3 text-slate-500 md:table-cell">
+                    <span className="line-clamp-2">{o.address ?? "—"}</span>
+                  </td>
                   <td className="hidden px-4 py-3 text-slate-500 md:table-cell">{fmtDate(o.so_date)}</td>
                   <td className="hidden px-4 py-3 text-slate-500 lg:table-cell">{o.branch ?? "—"}</td>
                   <td className="px-4 py-3"><SoBadge status={o.status} /></td>

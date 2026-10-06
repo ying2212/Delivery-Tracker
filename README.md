@@ -8,7 +8,7 @@ Built with Next.js, Supabase and Tailwind. AutoCount sync comes later; for now S
 | Page | Who | What it does |
 |---|---|---|
 | `/deliveries` | office | Board of today's DOs by status, assign drivers, updates live |
-| `/drivers` | office | Driver status: each driver's orders from date to date, split into trips; drag orders to plan trips. Staff only see their own branch's drivers |
+| `/drivers` | office | Driver status: each driver's orders from date to date, split into trips; drag orders to plan trips. Opens on your own branch's drivers; switch branch with the dropdown |
 | `/orders` | office | SO list with search and status filter |
 | `/orders/new` | office | Key in an SO by hand |
 | `/orders/[id]` | office | SO detail, item progress, create (partial) DOs, POD photos, timeline |
@@ -25,8 +25,7 @@ Roles: **admin** and **dispatcher** see everything. **driver** only sees their o
    ```
 2. **Create a Supabase project** at [supabase.com](https://supabase.com) (pick the Singapore region, it's closest to Malaysia).
 3. **Create the database**: Supabase → SQL Editor → paste all of `supabase/schema.sql` → Run.
-   Already set up before branches/trips existed? Run `supabase/migrations/002_branches_and_trips.sql` once instead.
-   Already set up before lorry numbers existed? Also run `supabase/migrations/003_lorry_no.sql`, then set each driver's `profiles.lorry_no`.
+   Database created with an older version? Run `supabase/upgrade.sql` once instead (safe to run again).
 4. **Connect the app**: copy `.env.example` to `.env.local` and fill in the URL and anon/publishable key from Supabase → Project Settings → API.
 5. **Create users**: Supabase → Authentication → Users → Add user (tick *Auto confirm*). Everyone starts as a `driver`. Make yourself admin in the SQL Editor:
    ```sql

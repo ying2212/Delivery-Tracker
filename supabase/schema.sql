@@ -14,7 +14,7 @@ create table public.profiles (
   full_name  text not null default '',
   phone      text,
   role       public.user_role not null default 'driver',
-  branch     text,                           -- drivers belong to one branch; staff with a branch only see its drivers
+  branch     text,                           -- GP, PD, …; pages open on this branch first
   lorry_no   text,                           -- number on the driver's lorry, e.g. "93"
   created_at timestamptz not null default now()
 );
@@ -63,6 +63,8 @@ create table public.sales_orders (
   updated_at    timestamptz not null default now()
 );
 
+create unique index sales_orders_so_no_ci_key on public.sales_orders (upper(so_no)); -- "SO-001" = "so-001"
+
 create table public.so_items (
   id          uuid primary key default gen_random_uuid(),
   so_id       uuid not null references public.sales_orders on delete cascade,
@@ -89,6 +91,7 @@ create table public.delivery_orders (
   contact_phone  text,
   address        text,
   delivery_date  date not null default current_date,
+  branch         text,                         -- delivering branch/location (GP, PD, …); one SO can span several
   driver_id      uuid references public.profiles on delete set null,
   trip_no        int not null default 1 check (trip_no > 0), -- which trip of the driver's day
   trip_seq       int not null default 0,                     -- stop order inside the trip
@@ -99,9 +102,11 @@ create table public.delivery_orders (
   created_by     uuid default auth.uid() references public.profiles on delete set null,
   created_at     timestamptz not null default now()
 );
+create unique index delivery_orders_do_no_ci_key on public.delivery_orders (upper(do_no));
 create index on public.delivery_orders (driver_id, delivery_date);
 create index on public.delivery_orders (delivery_date, status);
 create index on public.delivery_orders (so_id);
+create index delivery_orders_branch_idx on public.delivery_orders (branch, delivery_date);
 create index delivery_orders_trip_idx on public.delivery_orders (driver_id, delivery_date, trip_no, trip_seq);
 
 create table public.do_items (

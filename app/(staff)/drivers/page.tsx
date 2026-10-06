@@ -1,4 +1,5 @@
 import { requireStaff } from "@/lib/auth";
+import { pickBranch } from "@/lib/branches";
 import { dateRange, todayMY } from "@/lib/format";
 import type { DeliveryOrder, Profile } from "@/lib/types";
 import { DriverTrips } from "@/components/DriverTrips";
@@ -18,13 +19,15 @@ export default async function DriversPage({
   const to = sp.to && sp.to >= from ? sp.to : from;
   const dates = dateRange(from, to, MAX_DAYS);
 
-  // Staff in a branch only ever see that branch's drivers. Staff without a branch (admin) can pick one.
-  let driverQuery = supabase.from("profiles").select("id, full_name, branch, lorry_no").eq("role", "driver").order("full_name");
-  if (profile.branch) driverQuery = driverQuery.eq("branch", profile.branch);
-  const { data: driverRows } = await driverQuery;
+  // Opens on the user's own branch's drivers; they can switch to another branch or all.
+  const { data: driverRows } = await supabase
+    .from("profiles")
+    .select("id, full_name, branch, lorry_no")
+    .eq("role", "driver")
+    .order("full_name");
   const allDrivers = (driverRows ?? []) as Pick<Profile, "id" | "full_name" | "branch" | "lorry_no">[];
-  const branches = [...new Set(allDrivers.map((d) => d.branch).filter((b): b is string => !!b))].sort();
-  const branch = profile.branch ?? (sp.branch || "");
+  const branch = pickBranch(sp.branch, profile.branch);
+  const branches = [...new Set([...allDrivers.map((d) => d.branch), branch].filter((b): b is string => !!b))].sort();
   const drivers = branch ? allDrivers.filter((d) => d.branch === branch) : allDrivers;
 
   let jobs: DeliveryOrder[] = [];
@@ -49,15 +52,17 @@ export default async function DriversPage({
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Driver status</h1>
           <p className="text-sm text-slate-500">
-            {profile.branch ? `${profile.branch} branch · ` : ""}
+            {branch ? `${branch} branch · ` : branches.length ? "All branches · " : ""}
             {done} of {jobs.length} delivered · drag orders to arrange trips
           </p>
         </div>
         <form className="flex flex-wrap items-center gap-2">
-          {!profile.branch && branches.length > 0 && (
-            <select name="branch" defaultValue={branch} className="input w-auto">
-              <option value="">All branches</option>
-              {branches.map((b) => <option key={b}>{b}</option>)}
+          {branches.length > 0 && (
+            <select name="branch" defaultValue={branch || "all"} className="input w-auto">
+              <option value="all">All branches</option>
+              {branches.map((b) => (
+                <option key={b} value={b}>{b}{b === profile.branch ? " (mine)" : ""}</option>
+              ))}
             </select>
           )}
           <label className="flex items-center gap-1.5 text-sm text-slate-500">

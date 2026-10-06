@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireStaff } from "@/lib/auth";
+import { listBranches } from "@/lib/branches";
 import { createDeliveryOrder } from "@/app/actions";
 import { DoBadge, SoBadge } from "@/components/StatusBadge";
 import { driverLabel, fmtDate, fmtDateTime, fmtQty, todayMY } from "@/lib/format";
@@ -10,9 +11,9 @@ const EVENT_LABEL: Record<string, string> = { so_created: "Order created", do_cr
 
 export default async function OrderDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { supabase } = await requireStaff();
+  const { supabase, profile } = await requireStaff();
 
-  const [{ data: so }, { data: items }, { data: dos }, { data: events }, { data: drivers }] = await Promise.all([
+  const [{ data: so }, { data: items }, { data: dos }, { data: events }, { data: drivers }, branches] = await Promise.all([
     supabase.from("sales_orders").select("*").eq("id", id).single<SalesOrder>(),
     supabase.from("so_item_progress").select("*").eq("so_id", id).order("line_no"),
     supabase
@@ -26,6 +27,7 @@ export default async function OrderDetail({ params }: { params: Promise<{ id: st
       .eq("so_id", id)
       .order("created_at", { ascending: false }),
     supabase.from("profiles").select("id, full_name, lorry_no").eq("role", "driver").order("full_name"),
+    listBranches(supabase),
   ]);
   if (!so) notFound();
 
@@ -111,7 +113,7 @@ export default async function OrderDetail({ params }: { params: Promise<{ id: st
                     <DoBadge status={d.status as DoStatus} />
                   </div>
                   <span className="text-sm text-slate-500">
-                    {fmtDate(d.delivery_date)} · {d.driver ? driverLabel(d.driver) : "No driver"}
+                    {d.branch && `${d.branch} · `}{fmtDate(d.delivery_date)} · {d.driver ? driverLabel(d.driver) : "No driver"}
                   </span>
                 </div>
                 <p className="mt-2 text-sm text-slate-600">
@@ -159,6 +161,13 @@ export default async function OrderDetail({ params }: { params: Promise<{ id: st
                   <div>
                     <label className="label">Delivery date</label>
                     <input name="delivery_date" type="date" defaultValue={todayMY()} required className="input" />
+                  </div>
+                  <div>
+                    <label className="label">Branch (delivering location)</label>
+                    <select name="branch" className="input" defaultValue={profile.branch ?? ""}>
+                      <option value="">No branch</option>
+                      {branches.map((b) => <option key={b}>{b}</option>)}
+                    </select>
                   </div>
                   <div>
                     <label className="label">Driver</label>

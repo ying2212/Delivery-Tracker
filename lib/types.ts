@@ -58,6 +58,7 @@ export type DeliveryOrder = {
   contact_phone: string | null;
   address: string | null;
   delivery_date: string;
+  branch: string | null;
   driver_id: string | null;
   trip_no: number;
   trip_seq: number;

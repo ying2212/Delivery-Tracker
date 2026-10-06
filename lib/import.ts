@@ -43,7 +43,10 @@ const clean = (v: unknown) => (v == null ? undefined : String(v).trim() || undef
 /**
  * THE single entry point for getting sales orders into the app.
  * - Creates new SOs, updates headers of existing ones (matched by so_no).
+ *   The "New order" form (source = manual) never updates: an SO number
+ *   that is already in the system is rejected instead.
  * - Replaces line items only if the SO has no delivery orders yet.
+ * SO numbers are stored in upper case so "so-001" and "SO-001" are the same order.
  */
 export async function upsertSalesOrders(
   supabase: SupabaseClient,
@@ -55,7 +58,7 @@ export async function upsertSalesOrders(
   // Group rows by SO number
   const groups = new Map<string, SoImportRow[]>();
   rows.forEach((r, i) => {
-    const so_no = clean(r.so_no);
+    const so_no = clean(r.so_no)?.toUpperCase();
     const qty = Number(String(r.qty ?? "").replace(/,/g, ""));
     if (!so_no) return result.errors.push(`Row ${i + 2}: missing so_no`);
     if (!clean(r.customer_name)) return result.errors.push(`Row ${i + 2} (${so_no}): missing customer_name`);
@@ -72,6 +75,10 @@ export async function upsertSalesOrders(
   const existingSet = new Set((existing ?? []).map((e) => e.so_no));
 
   for (const [so_no, lines] of groups) {
+    if (source === "manual" && existingSet.has(so_no)) {
+      result.errors.push(`${so_no} is already in the system. Use a different SO number.`);
+      continue;
+    }
     const h = lines[0];
     const { data: so, error } = await supabase
       .from("sales_orders")
@@ -93,6 +100,11 @@ export async function upsertSalesOrders(
       .select("id")
       .single();
 
+    if (error?.code === "23505") {
+      // Unique index on upper(so_no): an older SO saved in different letter case.
+      result.errors.push(`${so_no} is already in the system (with different upper/lower case).`);
+      continue;
+    }
     if (error || !so) {
       result.errors.push(`${so_no}: ${error?.message ?? "could not save"}`);
       continue;
