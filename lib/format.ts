@@ -69,3 +69,8 @@ export function mapsLinks(address: string) {
     google: `https://www.google.com/maps/search/?api=1&query=${q}`,
   };
 }
+
+/** "Azli · Lorry 93" — staff know lorries by number, so show it with the name. */
+export function driverLabel(d: { full_name: string; lorry_no?: string | null }): string {
+  return d.lorry_no ? `${d.full_name} · Lorry ${d.lorry_no}` : d.full_name;
+}

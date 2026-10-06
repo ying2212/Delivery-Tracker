@@ -19,7 +19,7 @@ export const SO_STATUS_LABEL: Record<SoStatus, string> = {
   cancelled: "Cancelled",
 };
 
-export type Profile = { id: string; full_name: string; role: Role; phone: string | null; branch: string | null };
+export type Profile = { id: string; full_name: string; role: Role; phone: string | null; branch: string | null; lorry_no: string | null };
 
 export type SalesOrder = {
   id: string;
@@ -65,7 +65,7 @@ export type DeliveryOrder = {
   failed_reason: string | null;
   pod_photo_path: string | null;
   delivered_at: string | null;
-  driver?: { full_name: string } | null;
+  driver?: { full_name: string; lorry_no: string | null } | null;
   do_items?: DoItem[];
 };
 

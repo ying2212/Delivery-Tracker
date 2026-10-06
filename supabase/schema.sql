@@ -15,6 +15,7 @@ create table public.profiles (
   phone      text,
   role       public.user_role not null default 'driver',
   branch     text,                           -- drivers belong to one branch; staff with a branch only see its drivers
+  lorry_no   text,                           -- number on the driver's lorry, e.g. "93"
   created_at timestamptz not null default now()
 );
 

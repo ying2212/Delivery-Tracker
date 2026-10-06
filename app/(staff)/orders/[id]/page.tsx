@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { requireStaff } from "@/lib/auth";
 import { createDeliveryOrder } from "@/app/actions";
 import { DoBadge, SoBadge } from "@/components/StatusBadge";
-import { fmtDate, fmtDateTime, fmtQty, todayMY } from "@/lib/format";
+import { driverLabel, fmtDate, fmtDateTime, fmtQty, todayMY } from "@/lib/format";
 import { DO_STATUS_LABEL, type DeliveryOrder, type DoStatus, type Profile, type SalesOrder, type SoItemProgress, type StatusEvent } from "@/lib/types";
 
 const EVENT_LABEL: Record<string, string> = { so_created: "Order created", do_created: "DO created", ...DO_STATUS_LABEL };
@@ -17,7 +17,7 @@ export default async function OrderDetail({ params }: { params: Promise<{ id: st
     supabase.from("so_item_progress").select("*").eq("so_id", id).order("line_no"),
     supabase
       .from("delivery_orders")
-      .select("*, driver:profiles!delivery_orders_driver_id_fkey(full_name), do_items(id, item_code, description, uom, qty)")
+      .select("*, driver:profiles!delivery_orders_driver_id_fkey(full_name, lorry_no), do_items(id, item_code, description, uom, qty)")
       .eq("so_id", id)
       .order("created_at"),
     supabase
@@ -25,7 +25,7 @@ export default async function OrderDetail({ params }: { params: Promise<{ id: st
       .select("id, status, note, created_at, do_id, actor:profiles!status_events_actor_id_fkey(full_name)")
       .eq("so_id", id)
       .order("created_at", { ascending: false }),
-    supabase.from("profiles").select("id, full_name").eq("role", "driver").order("full_name"),
+    supabase.from("profiles").select("id, full_name, lorry_no").eq("role", "driver").order("full_name"),
   ]);
   if (!so) notFound();
 
@@ -111,7 +111,7 @@ export default async function OrderDetail({ params }: { params: Promise<{ id: st
                     <DoBadge status={d.status as DoStatus} />
                   </div>
                   <span className="text-sm text-slate-500">
-                    {fmtDate(d.delivery_date)} · {d.driver?.full_name ?? "No driver"}
+                    {fmtDate(d.delivery_date)} · {d.driver ? driverLabel(d.driver) : "No driver"}
                   </span>
                 </div>
                 <p className="mt-2 text-sm text-slate-600">
@@ -164,8 +164,8 @@ export default async function OrderDetail({ params }: { params: Promise<{ id: st
                     <label className="label">Driver</label>
                     <select name="driver_id" className="input" defaultValue="">
                       <option value="">Assign later</option>
-                      {(drivers as Pick<Profile, "id" | "full_name">[] | null)?.map((d) => (
-                        <option key={d.id} value={d.id}>{d.full_name}</option>
+                      {(drivers as Pick<Profile, "id" | "full_name" | "lorry_no">[] | null)?.map((d) => (
+                        <option key={d.id} value={d.id}>{driverLabel(d)}</option>
                       ))}
                     </select>
                   </div>

@@ -2,6 +2,7 @@
 
 import { useTransition } from "react";
 import { assignDriver } from "@/app/actions";
+import { driverLabel } from "@/lib/format";
 
 export function AssignDriver({
   doId,
@@ -10,7 +11,7 @@ export function AssignDriver({
 }: {
   doId: string;
   driverId: string | null;
-  drivers: { id: string; full_name: string }[];
+  drivers: { id: string; full_name: string; lorry_no: string | null }[];
 }) {
   const [pending, start] = useTransition();
   return (
@@ -27,7 +28,7 @@ export function AssignDriver({
     >
       <option value="">Choose driver…</option>
       {drivers.map((d) => (
-        <option key={d.id} value={d.id}>{d.full_name}</option>
+        <option key={d.id} value={d.id}>{driverLabel(d)}</option>
       ))}
     </select>
   );

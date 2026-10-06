@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 import { getSession, requireStaff } from "@/lib/auth";
+import { driverLabel } from "@/lib/format";
 import { upsertSalesOrders, type SoImportRow, type ImportResult } from "@/lib/import";
 import type { DoStatus, SoItemProgress } from "@/lib/types";
 
@@ -124,8 +125,8 @@ export async function assignDriver(formData: FormData) {
 
   let driverName = "nobody";
   if (driverId) {
-    const { data: d } = await supabase.from("profiles").select("full_name").eq("id", driverId).single();
-    driverName = d?.full_name ?? "driver";
+    const { data: d } = await supabase.from("profiles").select("full_name, lorry_no").eq("id", driverId).single();
+    driverName = d ? driverLabel(d) : "driver";
   }
   await supabase.from("status_events").insert({
     so_id: current.so_id,

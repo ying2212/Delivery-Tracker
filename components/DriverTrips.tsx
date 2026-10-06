@@ -7,7 +7,7 @@ import { DoBadge } from "./StatusBadge";
 import { fmtDate } from "@/lib/format";
 import type { DeliveryOrder, DoStatus } from "@/lib/types";
 
-type Driver = { id: string; full_name: string; branch: string | null };
+type Driver = { id: string; full_name: string; branch: string | null; lorry_no: string | null };
 type Lane = { driverId: string; date: string; tripNo: number };
 
 /** Orders already on the road or delivered stay where they are. */
@@ -152,7 +152,12 @@ export function DriverTrips({ drivers, dates, jobs: initial }: { drivers: Driver
                 {d.full_name.slice(0, 1).toUpperCase()}
               </span>
               <div>
-                <h2 className="font-semibold leading-tight">{d.full_name}</h2>
+                <h2 className="flex items-center gap-2 font-semibold leading-tight">
+                  {d.full_name}
+                  {d.lorry_no && (
+                    <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-800">Lorry {d.lorry_no}</span>
+                  )}
+                </h2>
                 {d.branch && <p className="text-xs text-slate-500">{d.branch}</p>}
               </div>
               <div className="ml-auto flex items-center gap-3 text-sm text-slate-500">

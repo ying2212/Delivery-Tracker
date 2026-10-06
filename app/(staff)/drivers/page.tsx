@@ -19,10 +19,10 @@ export default async function DriversPage({
   const dates = dateRange(from, to, MAX_DAYS);
 
   // Staff in a branch only ever see that branch's drivers. Staff without a branch (admin) can pick one.
-  let driverQuery = supabase.from("profiles").select("id, full_name, branch").eq("role", "driver").order("full_name");
+  let driverQuery = supabase.from("profiles").select("id, full_name, branch, lorry_no").eq("role", "driver").order("full_name");
   if (profile.branch) driverQuery = driverQuery.eq("branch", profile.branch);
   const { data: driverRows } = await driverQuery;
-  const allDrivers = (driverRows ?? []) as Pick<Profile, "id" | "full_name" | "branch">[];
+  const allDrivers = (driverRows ?? []) as Pick<Profile, "id" | "full_name" | "branch" | "lorry_no">[];
   const branches = [...new Set(allDrivers.map((d) => d.branch).filter((b): b is string => !!b))].sort();
   const branch = profile.branch ?? (sp.branch || "");
   const drivers = branch ? allDrivers.filter((d) => d.branch === branch) : allDrivers;
