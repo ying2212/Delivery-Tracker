@@ -136,5 +136,59 @@ language sql security invoker set search_path = '' as $$
   where s.id = st.id and s.status <> st.status;
 $$;
 
+-- ---------- Driver points & commission -------------------------------
+-- Points per delivered DO: 3 if more than 20 km by road from the
+-- delivering branch's store, else 2 (Google Maps). Office staff can key
+-- points in by hand (points_manual) when the address can't be found,
+-- and for special DOs.
+alter table public.delivery_orders
+  add column if not exists points        int check (points between 0 and 99),
+  add column if not exists points_manual boolean not null default false,
+  add column if not exists distance_km   numeric(7, 2),
+  add column if not exists geo_status    text,  -- ok | approx | not_found | no_store | no_address | error
+  add column if not exists geo_input     text,  -- the address the distance was worked out from
+  add column if not exists geo_address   text,  -- what Google matched it to
+  add column if not exists instructions  text;  -- office → driver (special DOs)
+
+-- Special DOs keyed in by the office get their own numbers: SDO-000001.
+alter table public.delivery_orders
+  alter column do_no set default 'SDO-' || lpad(nextval('public.do_no_seq')::text, 6, '0');
+
+-- Commission depends on points and delivery time, so drivers can't edit
+-- those themselves; delivered_at is always the server's clock.
+create or replace function public.guard_delivery_order() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  if auth.uid() is not null and not public.is_staff() then  -- drivers (a server sync has no user)
+    new.points        := old.points;
+    new.points_manual := old.points_manual;
+    new.distance_km   := old.distance_km;
+    new.instructions  := old.instructions;
+    new.own_collection := old.own_collection;
+  end if;
+  if new.status = 'delivered' and old.status is distinct from 'delivered' then
+    new.delivered_at := now();
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists guard_delivery_order on public.delivery_orders;
+create trigger guard_delivery_order
+  before update on public.delivery_orders
+  for each row execute function public.guard_delivery_order();
+
+create index if not exists delivery_orders_delivered_idx
+  on public.delivery_orders (driver_id, delivered_at) where status = 'delivered';
+
+-- ---------- Delivery orders: O/C (own collection) ---------------------
+alter table public.delivery_orders
+  -- O/C = own collection (customer collects at the store). null = work it out
+  -- from "O/C" in the remarks/address; true/false = the office picked it.
+  add column if not exists own_collection boolean,
+  add column if not exists is_oc boolean generated always as (coalesce(own_collection,
+    coalesce(remarks, '') ~* '(^|[^a-z0-9])o\s*/\s*c([^a-z0-9]|$)'
+    or coalesce(address, '') ~* '(^|[^a-z0-9])o\s*/\s*c([^a-z0-9]|$)')) stored;
+create index if not exists delivery_orders_is_oc_idx on public.delivery_orders (delivery_date) where is_oc;
+
 -- ---------- After upgrading: set users' branch and lorry number --------
 -- update profiles set branch = 'GP', lorry_no = '93' where full_name = 'Azli';

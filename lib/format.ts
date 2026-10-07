@@ -79,3 +79,19 @@ export function fmtMoney(n: number | null | undefined): string {
   if (n == null) return "—";
   return "RM " + Number(n).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+
+/** YYYY-MM-DD plus `n` days. */
+export function addDays(d: string, n: number): string {
+  const t = new Date(d + "T00:00:00Z");
+  t.setUTCDate(t.getUTCDate() + n);
+  return t.toISOString().slice(0, 10);
+}
+
+/** "Today · 7 Oct", "Tomorrow · 8 Oct", "Fri · 9 Oct". */
+export function dayLabel(d: string, today: string): string {
+  const t = new Date(d + "T00:00:00Z");
+  const short = t.toLocaleDateString("en-MY", { day: "numeric", month: "short", timeZone: "UTC" });
+  if (d === today) return `Today · ${short}`;
+  if (d === addDays(today, 1)) return `Tomorrow · ${short}`;
+  return `${t.toLocaleDateString("en-MY", { weekday: "short", timeZone: "UTC" })} · ${short}`;
+}

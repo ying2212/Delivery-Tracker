@@ -124,6 +124,7 @@ export default function ImportPage() {
         <div className="card space-y-2 p-5 text-sm">
           <p className="font-semibold">Import finished</p>
           <p className="text-emerald-700">✓ {result.created.length} new · {result.updated.length} updated</p>
+          {result.notes?.map((n) => <p key={n} className="text-slate-600">📍 {n}</p>)}
           {result.warnings.length > 0 && (
             <ul className="list-inside list-disc text-amber-700">
               {result.warnings.slice(0, 30).map((w) => <li key={w}>{w}</li>)}

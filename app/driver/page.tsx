@@ -2,6 +2,8 @@ import { getSession } from "@/lib/auth";
 import { fmtDate, todayMY } from "@/lib/format";
 import type { DeliveryOrder } from "@/lib/types";
 import { JobCard } from "@/components/JobCard";
+import { CommissionBar } from "@/components/CommissionBar";
+import { dayTotals } from "@/lib/commission";
 import { signOut } from "../actions";
 import Link from "next/link";
 
@@ -19,6 +21,19 @@ export default async function DriverPage({ searchParams }: { searchParams: Promi
   // Always opens on today; the driver can pick another day to look back.
   const date = sp.date && /^\d{4}-\d{2}-\d{2}$/.test(sp.date) ? sp.date : today;
   const isToday = date === today;
+
+  // Commission counts what this driver delivered on the day (by delivery time).
+  const dayEnd = new Date(date + "T00:00:00+08:00");
+  dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
+  const { data: deliveredRows } = await supabase
+    .from("delivery_orders")
+    .select("delivered_at, points")
+    .eq("driver_id", user.id)
+    .eq("status", "delivered")
+    .eq("cancelled", false)
+    .gte("delivered_at", `${date}T00:00:00+08:00`)
+    .lt("delivered_at", dayEnd.toISOString());
+  const day = dayTotals(deliveredRows ?? []).get(date) ?? { delivered: 0, points: 0, missingPoints: 0 };
 
   const { data } = await supabase
     .from("delivery_orders")
@@ -71,6 +86,7 @@ export default async function DriverPage({ searchParams }: { searchParams: Promi
       </header>
 
       <div className="space-y-3 px-4 pt-4">
+        <CommissionBar date={date} isToday={isToday} delivered={day.delivered} points={day.points} missingPoints={day.missingPoints} />
         {jobs.length === 0 && (
           <div className="card p-10 text-center text-slate-500">{isToday ? "No deliveries assigned to you today" : `No deliveries on ${fmtDate(date)}`}</div>
         )}

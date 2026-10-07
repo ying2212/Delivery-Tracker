@@ -93,7 +93,7 @@ create sequence public.do_no_seq;
 create table public.delivery_orders (
   id             uuid primary key default gen_random_uuid(),
   do_no          text not null unique
-                 default 'DO-' || lpad(nextval('public.do_no_seq')::text, 6, '0'),
+                 default 'SDO-' || lpad(nextval('public.do_no_seq')::text, 6, '0'), -- special DOs; AutoCount DOs bring their own
   so_id          uuid references public.sales_orders on delete set null, -- first linked SO (for links); all links in do_sales_orders
   so_no          text not null default '',     -- AutoCount Transfer From: the SO number(s), as exported
   customer_name  text not null,
@@ -108,7 +108,18 @@ create table public.delivery_orders (
   invoice_no     text,                         -- AutoCount Transfer To (invoice)
   created_user   text,                         -- AutoCount Created User
   cancelled      boolean not null default false,
-  source         text not null default 'manual', -- manual | autocount
+  source         text not null default 'manual', -- autocount | special
+  instructions   text,                         -- office → driver (special DOs)
+  points         int check (points between 0 and 99), -- commission points: 3 if > 20 km, else 2
+  points_manual  boolean not null default false, -- keyed in by the office
+  distance_km    numeric(7, 2),                -- driving distance from the delivering branch's store
+  geo_status     text,                         -- ok | approx | not_found | no_store | no_address | error
+  geo_input      text,                         -- the address the distance was worked out from
+  geo_address    text,                         -- what Google matched it to
+  own_collection boolean,                      -- O/C (customer collects): null = from "O/C" in remarks/address; true/false = office's pick
+  is_oc          boolean generated always as (coalesce(own_collection,
+                   coalesce(remarks, '') ~* '(^|[^a-z0-9])o\s*/\s*c([^a-z0-9]|$)'
+                   or coalesce(address, '') ~* '(^|[^a-z0-9])o\s*/\s*c([^a-z0-9]|$)')) stored,
   driver_id      uuid references public.profiles on delete set null,
   trip_no        int not null default 1 check (trip_no > 0), -- which trip of the driver's day
   trip_seq       int not null default 0,                     -- stop order inside the trip
@@ -125,6 +136,8 @@ create index on public.delivery_orders (delivery_date, status);
 create index on public.delivery_orders (so_id);
 create index delivery_orders_branch_idx on public.delivery_orders (branch, delivery_date);
 create index delivery_orders_sales_branch_idx on public.delivery_orders (sales_branch, delivery_date);
+create index delivery_orders_delivered_idx on public.delivery_orders (driver_id, delivered_at) where status = 'delivered';
+create index delivery_orders_is_oc_idx on public.delivery_orders (delivery_date) where is_oc;
 create index delivery_orders_trip_idx on public.delivery_orders (driver_id, delivery_date, trip_no, trip_seq);
 
 -- One SO can be split over many DOs (trips); one DO can combine many SOs
@@ -217,6 +230,31 @@ language sql security invoker set search_path = '' as $$
   from st
   where s.id = st.id and s.status <> st.status;
 $$;
+
+-- ---------- Driver points & commission -------------------------------
+-- Commission depends on points and delivery time, so drivers can't edit
+-- those themselves; delivered_at is always the server's clock.
+create or replace function public.guard_delivery_order() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  if auth.uid() is not null and not public.is_staff() then  -- drivers (a server sync has no user)
+    new.points        := old.points;
+    new.points_manual := old.points_manual;
+    new.distance_km   := old.distance_km;
+    new.instructions  := old.instructions;
+    new.own_collection := old.own_collection;
+  end if;
+  if new.status = 'delivered' and old.status is distinct from 'delivered' then
+    new.delivered_at := now();
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists guard_delivery_order on public.delivery_orders;
+create trigger guard_delivery_order
+  before update on public.delivery_orders
+  for each row execute function public.guard_delivery_order();
+
 
 -- ---------- Row Level Security ---------------------------------------
 alter table public.profiles        enable row level security;

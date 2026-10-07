@@ -33,3 +33,26 @@
 @utility label {
   @apply mb-1.5 block text-xs font-medium text-slate-500;
 }
+
+/* ---------- Driver commission bar animations ---------- */
+@keyframes lorry-bob { 0%, 100% { transform: translateY(0) } 50% { transform: translateY(-2px) } }
+@keyframes lorry-jump {
+  0% { transform: translateY(0) rotate(0) } 30% { transform: translateY(-16px) rotate(-8deg) }
+  60% { transform: translateY(0) rotate(0) } 80% { transform: translateY(-5px) } 100% { transform: translateY(0) }
+}
+@keyframes wheel-spin { to { transform: rotate(360deg) } }
+@keyframes dust-puff { 0% { opacity: .7; transform: translateX(0) scale(.6) } 100% { opacity: 0; transform: translateX(-16px) scale(1.3) } }
+@keyframes pop-in { 0% { opacity: 0; transform: translateY(4px) scale(.8) } 60% { opacity: 1; transform: translateY(0) scale(1.05) } 100% { transform: scale(1) } }
+@keyframes confetti-fall {
+  0% { opacity: 1; transform: translate(0, 0) rotate(0) }
+  100% { opacity: 0; transform: translate(var(--dx), 140px) rotate(var(--rot)) }
+}
+.lorry-bob { animation: lorry-bob .5s ease-in-out infinite }
+.lorry-jump { animation: lorry-jump .7s ease-out }
+.wheel-spin { animation: wheel-spin .6s linear infinite; transform-box: fill-box; transform-origin: center }
+.dust-puff { animation: dust-puff .8s ease-out infinite }
+.pop-in { animation: pop-in .35s ease-out both }
+.confetti { animation: confetti-fall 1.4s ease-in forwards }
+@media (prefers-reduced-motion: reduce) {
+  .lorry-bob, .lorry-jump, .wheel-spin, .dust-puff, .confetti { animation: none }
+}

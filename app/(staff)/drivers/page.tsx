@@ -1,8 +1,11 @@
 import { requireStaff } from "@/lib/auth";
-import { pickBranch } from "@/lib/branches";
+import { lockedBranch, pickBranch } from "@/lib/branches";
 import { dateRange, todayMY } from "@/lib/format";
 import type { DeliveryOrder, Profile } from "@/lib/types";
-import { DriverTrips } from "@/components/DriverTrips";
+import { DriverTrips, type DriverStats } from "@/components/DriverTrips";
+import { CalculatePointsButton } from "@/components/PointsEditor";
+import { dayTotals, sumDays } from "@/lib/commission";
+import { mapsEnabled } from "@/lib/geo";
 import { RealtimeRefresh } from "@/components/RealtimeRefresh";
 
 const MAX_DAYS = 31;
@@ -19,19 +22,38 @@ export default async function DriversPage({
   const to = sp.to && sp.to >= from ? sp.to : from;
   const dates = dateRange(from, to, MAX_DAYS);
 
-  // Opens on the user's own branch's drivers; they can switch to another branch or all.
+  // Opens on the user's own branch's drivers; they can switch to another branch or all
+  // (dispatchers stay on their own branch).
   const { data: driverRows } = await supabase
     .from("profiles")
     .select("id, full_name, branch, lorry_no")
     .eq("role", "driver")
     .order("full_name");
   const allDrivers = (driverRows ?? []) as Pick<Profile, "id" | "full_name" | "branch" | "lorry_no">[];
-  const branch = pickBranch(sp.branch, profile.branch);
+  const locked = lockedBranch(profile);
+  const branch = locked ?? pickBranch(sp.branch, profile.branch);
   const branches = [...new Set([...allDrivers.map((d) => d.branch), branch].filter((b): b is string => !!b))].sort();
   const drivers = branch ? allDrivers.filter((d) => d.branch === branch) : allDrivers;
 
   let jobs: DeliveryOrder[] = [];
+  const stats: Record<string, DriverStats> = {};
   if (drivers.length) {
+    // Commission counts what was actually delivered on each day (delivered_at), not the planned date.
+    const end = new Date(dates[dates.length - 1] + "T00:00:00+08:00");
+    end.setUTCDate(end.getUTCDate() + 1);
+    const { data: deliveredRows } = await supabase
+      .from("delivery_orders")
+      .select("driver_id, delivered_at, points")
+      .in("driver_id", drivers.map((d) => d.id))
+      .eq("status", "delivered")
+      .eq("cancelled", false)
+      .gte("delivered_at", `${dates[0]}T00:00:00+08:00`)
+      .lt("delivered_at", end.toISOString());
+    for (const d of drivers) {
+      const mine = (deliveredRows ?? []).filter((r) => r.driver_id === d.id);
+      if (mine.length) stats[d.id] = sumDays(dayTotals(mine));
+    }
+
     const { data } = await supabase
       .from("delivery_orders")
       .select("*, do_items(id), links:do_sales_orders(so_no, so_id)")
@@ -45,6 +67,7 @@ export default async function DriversPage({
     jobs = (data ?? []) as DeliveryOrder[];
   }
   const done = jobs.filter((j) => j.status === "delivered").length;
+  const missingPoints = jobs.filter((j) => j.points == null && !j.points_manual).map((j) => j.id);
 
   return (
     <div className="space-y-5">
@@ -54,11 +77,12 @@ export default async function DriversPage({
           <h1 className="text-2xl font-semibold tracking-tight">Driver status</h1>
           <p className="text-sm text-slate-500">
             {branch ? `${branch} branch · ` : branches.length ? "All branches · " : ""}
-            {done} of {jobs.length} delivered · drag orders to arrange trips
+            {done} of {jobs.length} delivered · drag orders to arrange trips · click ⭐ to set points
           </p>
+          {mapsEnabled() && <div className="mt-2"><CalculatePointsButton ids={missingPoints} /></div>}
         </div>
         <form className="flex flex-wrap items-center gap-2">
-          {branches.length > 0 && (
+          {branches.length > 0 && !locked && (
             <select name="branch" defaultValue={branch || "all"} className="input w-auto">
               <option value="all">All branches</option>
               {branches.map((b) => (
@@ -84,7 +108,7 @@ export default async function DriversPage({
           No drivers {branch ? `in ${branch} branch` : "yet"}. Set a driver&apos;s branch in Supabase (<code>profiles.branch</code>).
         </div>
       ) : (
-        <DriverTrips drivers={drivers} dates={dates} jobs={jobs} />
+        <DriverTrips drivers={drivers} dates={dates} jobs={jobs} stats={stats} />
       )}
     </div>
   );

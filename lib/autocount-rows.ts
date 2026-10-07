@@ -47,6 +47,7 @@ export type AcImportResult = {
   updated: string[];
   warnings: string[];
   errors: string[];
+  notes?: string[];
 };
 
 // ---------- Parsing exported sheets ------------------------------------

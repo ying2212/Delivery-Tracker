@@ -5,9 +5,11 @@ import { redirect } from "next/navigation";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 import { getSession, requireStaff } from "@/lib/auth";
-import { driverLabel } from "@/lib/format";
+import { driverLabel, fmtDate, todayMY } from "@/lib/format";
 import { importAcDeliveryOrders, importAcSalesOrders } from "@/lib/autocount";
+import { mapsEnabled, updateDistances } from "@/lib/geo";
 import type { AcImport, AcImportResult } from "@/lib/autocount-rows";
+import { canPlan, lockedBranch } from "@/lib/branches";
 import type { DoStatus } from "@/lib/types";
 
 // ---------- Auth ------------------------------------------------------
@@ -37,6 +39,25 @@ export async function importAutoCount(data: AcImport): Promise<AcImportResult> {
     data.kind === "so"
       ? await importAcSalesOrders(supabase, data.rows)
       : await importAcDeliveryOrders(supabase, data.rows);
+
+  // New / changed delivery addresses → driving distance → driver points.
+  if (data.kind === "do") {
+    const doNos = [...result.created, ...result.updated];
+    const ids: string[] = [];
+    for (let i = 0; i < doNos.length; i += 200) {
+      const { data: rows } = await supabase.from("delivery_orders").select("id").in("do_no", doNos.slice(i, i + 200));
+      ids.push(...(rows ?? []).map((r) => r.id as string));
+    }
+    if (!mapsEnabled()) {
+      result.notes = ["Distances not calculated: GOOGLE_MAPS_API_KEY is not set. Key in points on Driver status."];
+    } else {
+      const d = await updateDistances(supabase, ids);
+      result.notes = [
+        `Distance & points worked out for ${d.measured} DOs.` +
+          (d.needManual ? ` ${d.needManual} need points keyed in on Driver status (address not found or no store address).` : ""),
+      ];
+    }
+  }
   revalidatePath("/orders");
   revalidatePath("/deliveries");
   revalidatePath("/drivers");
@@ -45,21 +66,87 @@ export async function importAutoCount(data: AcImport): Promise<AcImportResult> {
 
 // ---------- Delivery orders (staff) ----------------------------------
 
-export async function assignDriver(formData: FormData) {
+/** Special DO keyed in by the office (not from AutoCount): own address, points and instructions. */
+export async function createSpecialDo(formData: FormData) {
+  const { supabase, profile } = await requireStaff();
+  const get = (k: string) => String(formData.get(k) ?? "").trim() || null;
+  const points = Number(formData.get("points"));
+  const driverId = get("driver_id");
+  const date = get("delivery_date") ?? todayMY();
+  if (!get("customer_name")) throw new Error("Enter who it's delivered to.");
+  if (!Number.isInteger(points) || points < 0 || points > 99) throw new Error("Points must be a whole number from 0 to 99.");
+
+  const { data: d, error } = await supabase
+    .from("delivery_orders")
+    .insert({
+      customer_name: get("customer_name")!,
+      address: get("address"),
+      contact_phone: get("contact_phone"),
+      delivery_date: date,
+      branch: lockedBranch(profile) ?? get("branch"), // dispatchers always create for their own branch
+      driver_id: driverId,
+      status: driverId ? "assigned" : "pending",
+      instructions: get("instructions"),
+      points,
+      points_manual: true,
+      source: "special",
+    })
+    .select("id, do_no")
+    .single();
+  if (error || !d) throw new Error(error?.message ?? "Could not create the special DO");
+
+  await supabase.from("status_events").insert({ do_id: d.id, status: "do_created", note: `${d.do_no} special DO created` });
+  revalidatePath("/deliveries");
+  revalidatePath("/drivers");
+  revalidatePath("/driver");
+  redirect(`/deliveries?from=${date}&to=${date}`);
+}
+
+/** Office keys in a DO's points (e.g. the address couldn't be found). null = go back to the distance rule. */
+export async function setPoints(doId: string, points: number | null) {
   const { supabase } = await requireStaff();
+  if (points != null && (!Number.isInteger(points) || points < 0 || points > 99)) throw new Error("Points must be 0–99.");
+  const { error } = await supabase
+    .from("delivery_orders")
+    .update(points == null ? { points: null, points_manual: false, geo_status: null } : { points, points_manual: true })
+    .eq("id", doId);
+  if (error) throw new Error(error.message);
+  if (points == null) await updateDistances(supabase, [doId], true);
+  revalidatePath("/drivers");
+  revalidatePath("/deliveries");
+  revalidatePath("/driver");
+}
+
+/** Works out distance + points for DOs that don't have points yet (e.g. after adding a store address). */
+export async function calculateMissingPoints(doIds: string[]) {
+  const { supabase } = await requireStaff();
+  if (!mapsEnabled()) throw new Error("GOOGLE_MAPS_API_KEY is not set on the server.");
+  const d = await updateDistances(supabase, doIds.slice(0, 300), true);
+  revalidatePath("/drivers");
+  revalidatePath("/driver");
+  return d;
+}
+
+const notYourBranch = (branch: string) => `${branch} branch delivers this DO — only ${branch} can choose its driver or date.`;
+
+export async function assignDriver(formData: FormData) {
+  const { supabase, profile } = await requireStaff();
   const doId = String(formData.get("do_id"));
-  const driverId = String(formData.get("driver_id") || "") || null;
+  // "oc" = O/C: the customer collects, so no driver. Any other pick makes it a delivery.
+  const oc = formData.get("driver_id") === "oc";
+  const driverId = oc ? null : String(formData.get("driver_id") || "") || null;
   const date = String(formData.get("delivery_date") || "") || undefined;
 
-  const { data: current } = await supabase.from("delivery_orders").select("so_id, status").eq("id", doId).single();
+  const { data: current } = await supabase.from("delivery_orders").select("so_id, status, branch").eq("id", doId).single();
   if (!current) return;
+  if (!canPlan(profile.branch, current.branch)) throw new Error(notYourBranch(current.branch));
 
   let status: DoStatus = current.status;
   if (["pending", "assigned", "failed"].includes(current.status)) status = driverId ? "assigned" : "pending";
 
   await supabase
     .from("delivery_orders")
-    .update({ driver_id: driverId, status, failed_reason: null, ...(date ? { delivery_date: date } : {}) })
+    .update({ driver_id: driverId, status, failed_reason: null, own_collection: oc, ...(date ? { delivery_date: date } : {}) })
     .eq("id", doId);
 
   let driverName = "nobody";
@@ -71,11 +158,55 @@ export async function assignDriver(formData: FormData) {
     so_id: current.so_id,
     do_id: doId,
     status,
-    note: driverId ? `Assigned to ${driverName}` : "Unassigned",
+    note: oc ? "Marked O/C (customer collects)" : driverId ? `Assigned to ${driverName}` : "Unassigned",
   });
 
   revalidatePath("/deliveries");
   revalidatePath("/orders/[id]", "page"); // a DO can belong to several SOs
+}
+
+/**
+ * Moves DOs to another delivery day (e.g. tomorrow). The driver stays on them.
+ * DOs already on the road or delivered, or delivered by another branch, are skipped.
+ */
+export async function moveToDate(doIds: string[], date: string) {
+  const { supabase, profile } = await requireStaff();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick a date.");
+  if (date < todayMY()) throw new Error("Deliveries can't be moved to a past date.");
+
+  const { data } = await supabase
+    .from("delivery_orders")
+    .select("id, so_id, status, driver_id, delivery_date, branch")
+    .in("id", doIds.slice(0, 200));
+  const rows = (data ?? []).filter(
+    (d) => ["pending", "assigned", "failed"].includes(d.status) && canPlan(profile.branch, d.branch) && d.delivery_date !== date
+  );
+
+  for (const withDriver of [true, false]) {
+    const ids = rows.filter((d) => !!d.driver_id === withDriver).map((d) => d.id);
+    if (!ids.length) continue;
+    const { error } = await supabase
+      .from("delivery_orders")
+      .update({ delivery_date: date, status: withDriver ? "assigned" : "pending", failed_reason: null })
+      .in("id", ids);
+    if (error) throw new Error(error.message);
+  }
+  if (rows.length) {
+    await supabase.from("status_events").insert(
+      rows.map((d) => ({
+        so_id: d.so_id,
+        do_id: d.id,
+        status: d.driver_id ? "assigned" : "pending",
+        note: `Moved from ${fmtDate(d.delivery_date)} to ${fmtDate(date)}`,
+      }))
+    );
+  }
+
+  revalidatePath("/deliveries");
+  revalidatePath("/drivers");
+  revalidatePath("/driver");
+  revalidatePath("/orders/[id]", "page");
+  return { moved: rows.length, skipped: doIds.length - rows.length };
 }
 
 // ---------- Trip planning (Driver status page) -----------------------
@@ -83,7 +214,7 @@ export async function assignDriver(formData: FormData) {
 /**
  * Drops a DO into a driver's trip and saves the stop order of that trip.
  * `orderedIds` is the full order of the target trip after the drop.
- * Branch is only a default view, so staff can plan trips in any branch.
+ * Only the delivering branch (or staff without a branch) can plan a DO.
  */
 export async function moveToTrip(input: {
   doId: string;
@@ -92,7 +223,7 @@ export async function moveToTrip(input: {
   tripNo: number;
   orderedIds: string[];
 }) {
-  const { supabase } = await requireStaff();
+  const { supabase, profile } = await requireStaff();
   const { doId, driverId, date, tripNo, orderedIds } = input;
   if (!Number.isInteger(tripNo) || tripNo < 1) throw new Error("Invalid trip");
 
@@ -101,10 +232,11 @@ export async function moveToTrip(input: {
 
   const { data: current } = await supabase
     .from("delivery_orders")
-    .select("so_id, status, driver_id, delivery_date, trip_no")
+    .select("so_id, status, driver_id, delivery_date, trip_no, branch")
     .eq("id", doId)
     .single();
   if (!current) throw new Error("Delivery order not found");
+  if (!canPlan(profile.branch, current.branch)) throw new Error(notYourBranch(current.branch));
   if (current.status === "delivered" || current.status === "out_for_delivery") {
     throw new Error("This order is already on the road or delivered and can't be moved.");
   }

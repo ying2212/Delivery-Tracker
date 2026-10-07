@@ -65,6 +65,15 @@ export type DeliveryOrder = {
   invoice_no: string | null;
   created_user: string | null;
   cancelled: boolean;
+  source: string; // autocount | special
+  instructions: string | null; // office → driver
+  points: number | null; // commission points; null = office must key in
+  points_manual: boolean;
+  distance_km: number | null;
+  geo_status: string | null; // ok | approx | not_found | no_store | no_address | error
+  geo_address: string | null;
+  own_collection: boolean | null; // office's O/C pick; null = auto from remarks/address
+  is_oc: boolean; // O/C = customer collects at the store (no delivery)
   driver_id: string | null;
   trip_no: number;
   trip_seq: number;

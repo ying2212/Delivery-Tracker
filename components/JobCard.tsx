@@ -37,13 +37,19 @@ export function JobCard({ job, driverName }: { job: DeliveryOrder; driverName: s
       <div className="space-y-3 p-4">
         <div className="flex items-start justify-between gap-2">
           <div>
-            <p className="text-xs text-slate-500">{job.do_no} · {job.so_no}</p>
+            <p className="text-xs text-slate-500">
+              {job.do_no}{job.so_no && ` · ${job.so_no}`}
+              <span className="ml-1.5 rounded bg-yellow-50 px-1.5 font-medium text-yellow-800">
+                ⭐ {job.points == null ? "pts pending" : `${job.points} pts`}
+              </span>
+            </p>
             <h2 className="text-lg font-semibold leading-tight">{job.customer_name}</h2>
           </div>
           <DoBadge status={job.status} />
         </div>
 
         {job.address && <p className="text-sm text-slate-600">{job.address}</p>}
+        {job.instructions && <p className="rounded-xl bg-violet-50 px-3 py-2 text-sm text-violet-900">📋 {job.instructions}</p>}
         {job.remarks && <p className="rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-900">📝 {job.remarks}</p>}
 
         {!finished && (
@@ -54,7 +60,7 @@ export function JobCard({ job, driverName }: { job: DeliveryOrder; driverName: s
           </div>
         )}
 
-        <details className="rounded-xl bg-slate-50 px-3 py-2 text-sm">
+        {(job.do_items?.length ?? 0) > 0 && <details className="rounded-xl bg-slate-50 px-3 py-2 text-sm">
           <summary className="cursor-pointer font-medium text-slate-700">{job.do_items?.length ?? 0} items</summary>
           <ul className="mt-2 space-y-1">
             {job.do_items?.map((i) => (
@@ -64,7 +70,7 @@ export function JobCard({ job, driverName }: { job: DeliveryOrder; driverName: s
               </li>
             ))}
           </ul>
-        </details>
+        </details>}
 
         {job.failed_reason && job.status === "failed" && (
           <p className="text-sm text-rose-600">Failed: {job.failed_reason}</p>

@@ -2,7 +2,7 @@ import Link from "next/link";
 import { requireStaff } from "@/lib/auth";
 import { SoBadge, DoBadge } from "@/components/StatusBadge";
 import { fmtDate } from "@/lib/format";
-import { branchName } from "@/lib/branches";
+import { branchName, lockedBranch } from "@/lib/branches";
 import type { DoStatus, SoStatus } from "@/lib/types";
 
 const TABS: { value: string; label: string }[] = [
@@ -36,7 +36,9 @@ export default async function OrdersPage({
 }) {
   const { q = "", loc = "", status = "", from = "", to: rawTo = "" } = await searchParams;
   const to = rawTo && (!from || rawTo >= from) ? rawTo : "";
-  const { supabase } = await requireStaff();
+  const { supabase, profile } = await requireStaff();
+  // Dispatchers only see their own branch's SOs.
+  const locked = lockedBranch(profile);
 
   let query = supabase
     .from("sales_orders")
@@ -48,6 +50,7 @@ export default async function OrdersPage({
   if (term) query = query.or(`so_no.ilike.%${term}%,customer_name.ilike.%${term}%,transfer_to.ilike.%${term}%`);
   const locTerm = loc.replace(/[,()%]/g, " ").trim();
   if (locTerm) query = query.or(`address.ilike.%${locTerm}%,branch.ilike.%${locTerm}%`);
+  if (locked) query = query.eq("branch", locked);
   if (status) query = query.eq("status", status);
   if (from) query = query.gte("so_date", from);
   if (to) query = query.lte("so_date", to);

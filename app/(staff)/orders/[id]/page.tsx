@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireStaff } from "@/lib/auth";
-import { branchName } from "@/lib/branches";
+import { branchName, lockedBranch } from "@/lib/branches";
 import { splitDocNos } from "@/lib/autocount-rows";
 import { DoBadge, SoBadge } from "@/components/StatusBadge";
 import { driverLabel, fmtDate, fmtDateTime, fmtMoney, fmtQty } from "@/lib/format";
@@ -13,7 +13,7 @@ type Item = { id: string; item_code: string; description: string | null; uom: st
 
 export default async function OrderDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { supabase } = await requireStaff();
+  const { supabase, profile } = await requireStaff();
 
   const [{ data: so }, { data: items }, { data: linkRows }] = await Promise.all([
     supabase.from("sales_orders").select("*").eq("id", id).single<SalesOrder>(),
@@ -42,6 +42,9 @@ export default async function OrderDetail({ params }: { params: Promise<{ id: st
 
   const lines = (items ?? []) as Item[];
   const deliveries = (dos ?? []) as DeliveryOrder[];
+  // Dispatchers: their branch's SOs, or SOs with a DO their branch delivers or sold.
+  const locked = lockedBranch(profile);
+  if (locked && so.branch !== locked && !deliveries.some((d) => d.branch === locked || d.sales_branch === locked)) notFound();
   const doNoById = new Map(deliveries.map((d) => [d.id, d.do_no]));
   const timeline = (events ?? []) as unknown as StatusEvent[];
   // DOs AutoCount says this SO went to, but whose DO file hasn't been imported yet.

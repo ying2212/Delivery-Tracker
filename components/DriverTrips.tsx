@@ -4,10 +4,13 @@ import { useEffect, useState, useTransition } from "react";
 import { moveToTrip } from "@/app/actions";
 import { DoBadge } from "./StatusBadge";
 import { BranchTags, SoLinks } from "./DocLinks";
+import { PointsEditor } from "./PointsEditor";
 import { fmtDate } from "@/lib/format";
 import type { DeliveryOrder, DoStatus } from "@/lib/types";
 
 type Driver = { id: string; full_name: string; branch: string | null; lorry_no: string | null };
+/** Delivered DOs in the shown dates (by delivery time), with points and commission. */
+export type DriverStats = { delivered: number; points: number; missingPoints: number; rm: number };
 type Lane = { driverId: string; date: string; tripNo: number };
 
 /** Orders already on the road or delivered stay where they are. */
@@ -17,12 +20,23 @@ const laneKey = (l: Lane) => `${l.driverId}|${l.date}|${l.tripNo}`;
 const inLane = (j: DeliveryOrder, l: Lane) => j.driver_id === l.driverId && j.delivery_date === l.date && j.trip_no === l.tripNo;
 const bySeq = (a: DeliveryOrder, b: DeliveryOrder) => a.trip_seq - b.trip_seq;
 
-export function DriverTrips({ drivers, dates, jobs: initial }: { drivers: Driver[]; dates: string[]; jobs: DeliveryOrder[] }) {
+export function DriverTrips({
+  drivers,
+  dates,
+  jobs: initial,
+  stats,
+}: {
+  drivers: Driver[];
+  dates: string[];
+  jobs: DeliveryOrder[];
+  stats: Record<string, DriverStats>;
+}) {
   const [jobs, setJobs] = useState(initial);
   useEffect(() => setJobs(initial), [initial]);
   const [dragId, setDragId] = useState<string | null>(null);
   const [over, setOver] = useState<string | null>(null); // lane key or order id under the cursor
   const [error, setError] = useState<string | null>(null);
+  const [editingPoints, setEditingPoints] = useState<string | null>(null); // no dragging while typing points
   const [pending, start] = useTransition();
 
   function drop(lane: Lane, beforeId: string | null) {
@@ -83,7 +97,7 @@ export function DriverTrips({ drivers, dates, jobs: initial }: { drivers: Driver
             return (
               <article
                 key={j.id}
-                draggable={!locked}
+                draggable={!locked && editingPoints !== j.id}
                 onDragStart={(e) => {
                   e.dataTransfer.effectAllowed = "move";
                   e.dataTransfer.setData("text/plain", j.id);
@@ -124,7 +138,11 @@ export function DriverTrips({ drivers, dates, jobs: initial }: { drivers: Driver
                   <span className="whitespace-nowrap">{j.do_items?.length ?? 0} items</span>
                   <SoLinks job={j} className="truncate text-right" />
                 </div>
-                <BranchTags job={j} />
+                {j.instructions && <p className="line-clamp-2 rounded bg-violet-50 px-1.5 py-0.5 text-violet-800">📋 {j.instructions}</p>}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <PointsEditor job={j} onEditing={(on) => setEditingPoints(on ? j.id : null)} />
+                  <BranchTags job={j} />
+                </div>
                 {j.status === "failed" && j.failed_reason && <p className="text-rose-600">{j.failed_reason}</p>}
               </article>
             );
@@ -160,7 +178,13 @@ export function DriverTrips({ drivers, dates, jobs: initial }: { drivers: Driver
                 </h2>
                 {d.branch && <p className="text-xs text-slate-500">{d.branch}</p>}
               </div>
-              <div className="ml-auto flex items-center gap-3 text-sm text-slate-500">
+              <div className="ml-auto flex flex-wrap items-center gap-3 text-sm text-slate-500">
+                {stats[d.id] && (
+                  <span className="rounded-lg bg-yellow-50 px-2 py-0.5 text-yellow-900" title="Delivered in these dates (by delivery time)">
+                    ⭐ {stats[d.id].points} pts · 💰 RM {stats[d.id].rm}
+                    {stats[d.id].missingPoints > 0 && <span className="text-rose-600"> · {stats[d.id].missingPoints} need points</span>}
+                  </span>
+                )}
                 <span>{done} of {mine.length} delivered</span>
                 <div className="h-2 w-24 overflow-hidden rounded-full bg-slate-100">
                   <div className="h-full rounded-full bg-emerald-500" style={{ width: `${mine.length ? (done / mine.length) * 100 : 0}%` }} />
