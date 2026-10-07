@@ -25,6 +25,7 @@ export default async function DriverPage({ searchParams }: { searchParams: Promi
     .select("*, do_items(id, item_code, description, uom, qty)")
     .eq("driver_id", user.id)
     .eq("delivery_date", date)
+    .eq("cancelled", false)
     .order("trip_no")
     .order("trip_seq")
     .order("created_at");

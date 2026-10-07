@@ -1,18 +1,17 @@
 # Delivery Tracker
 
 Tracks sales orders (SO) → delivery orders (DO) → driver → delivered, and lets drivers WhatsApp customers.
-Built with Next.js, Supabase and Tailwind. AutoCount sync comes later; for now SOs are entered manually or imported from CSV.
+Built with Next.js, Supabase and Tailwind. SOs and DOs come from AutoCount (Excel export today, AutoCount API later).
 
 ## What's inside
 
 | Page | Who | What it does |
 |---|---|---|
-| `/deliveries` | office | Board of today's DOs by status, assign drivers, updates live |
+| `/deliveries` | office | Board of DOs by status (today by default), assign drivers, updates live |
 | `/drivers` | office | Driver status: each driver's orders from date to date, split into trips; drag orders to plan trips. Opens on your own branch's drivers; switch branch with the dropdown |
-| `/orders` | office | SO list with search and status filter |
-| `/orders/new` | office | Key in an SO by hand |
-| `/orders/[id]` | office | SO detail, item progress, create (partial) DOs, POD photos, timeline |
-| `/import` | office | Upload a CSV of SOs (template in `public/sample-sales-orders.csv`) |
+| `/orders` | office | SO list with search, status and date filters |
+| `/orders/[id]` | office | SO detail with AutoCount fields, its DOs (one SO can have many), POD photos, timeline |
+| `/import` | office | Upload the AutoCount SO or DO listing (.xlsx/.csv); SO ↔ DO are linked automatically |
 | `/driver` | drivers | Phone view: today's jobs, Waze/Maps/Call, start → delivered with photo, or failed with reason, WhatsApp buttons |
 
 Roles: **admin** and **dispatcher** see everything. **driver** only sees their own jobs (enforced in the database, not just the UI).
@@ -39,7 +38,7 @@ Roles: **admin** and **dispatcher** see everything. **driver** only sees their o
    ```bash
    npm run dev
    ```
-   Open http://localhost:3000, sign in, go to **Import** and upload `public/sample-sales-orders.csv` to get test data.
+   Open http://localhost:3000, sign in, go to **Import** and upload the SO and DO listings exported from AutoCount.
 
 ## Deploy
 
@@ -48,10 +47,16 @@ Drivers open the link on their phone and use **Add to Home Screen** (Safari shar
 
 ## How data gets in (and where AutoCount plugs in later)
 
-Everything goes through one function: `upsertSalesOrders()` in `lib/import.ts`.
-- CSV upload and the New order form already call it.
-- Later, an AutoCount sync script (reading AutoCount's SQL Server, read-only) should produce the same row shape and call the same function. Nothing else in the app has to change.
-- Re-importing an SO with the same number updates it. Line items are only replaced if no DO has been created yet.
+Everything goes through `importAcSalesOrders()` / `importAcDeliveryOrders()` in `lib/autocount.ts`,
+which take AutoCount documents in the shape defined in `lib/autocount-rows.ts`.
+- The Import page parses the Excel export into that shape in the browser and calls them.
+- Later, the AutoCount API sync should map its data to the same types and call the same functions.
+- Documents are matched by Doc. No.: importing again updates AutoCount's fields but never the driver, trip,
+  delivery status or delivery date set in this app.
+- SO ↔ DO is many-to-many (`do_sales_orders`), taken from DO "Transfer From" and SO "Transfer To".
+  Import order doesn't matter; links fill in when the other side arrives.
+- Branches: DO prefix = delivering branch (GPD → GP …), Sales Location = agent's branch. Mapping in `lib/branches.ts`.
+- Item lines aren't imported yet: every new SO/DO gets a test item (`TEST_ITEM` in `lib/autocount.ts`).
 
 ## Things to customise
 

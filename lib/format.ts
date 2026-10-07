@@ -74,3 +74,8 @@ export function mapsLinks(address: string) {
 export function driverLabel(d: { full_name: string; lorry_no?: string | null }): string {
   return d.lorry_no ? `${d.full_name} · Lorry ${d.lorry_no}` : d.full_name;
 }
+
+export function fmtMoney(n: number | null | undefined): string {
+  if (n == null) return "—";
+  return "RM " + Number(n).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}

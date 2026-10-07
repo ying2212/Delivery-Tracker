@@ -44,5 +44,97 @@ where d.branch is null and p.id = d.created_by and p.branch is not null;
 create unique index if not exists sales_orders_so_no_ci_key on public.sales_orders (upper(so_no));
 create unique index if not exists delivery_orders_do_no_ci_key on public.delivery_orders (upper(do_no));
 
+-- ---------- AutoCount import: extra SO / DO fields ----------------------
+alter table public.sales_orders
+  add column if not exists sales_location text,
+  add column if not exists agent          text,
+  add column if not exists credit_term    text,
+  add column if not exists total          numeric(14, 2),
+  add column if not exists transfer_to    text,
+  add column if not exists icb_from_po    text,
+  add column if not exists created_user   text,
+  add column if not exists ac_created_at  timestamptz;
+
+-- DOs come from AutoCount and can belong to several SOs (see do_sales_orders).
+alter table public.delivery_orders alter column so_id drop not null;
+alter table public.delivery_orders alter column so_no set default '';
+alter table public.delivery_orders drop constraint if exists delivery_orders_so_id_fkey;
+alter table public.delivery_orders
+  add constraint delivery_orders_so_id_fkey foreign key (so_id) references public.sales_orders on delete set null;
+alter table public.delivery_orders
+  add column if not exists remarks      text,
+  add column if not exists sales_branch text,
+  add column if not exists ref          text,
+  add column if not exists total        numeric(14, 2),
+  add column if not exists invoice_no   text,
+  add column if not exists created_user text,
+  add column if not exists cancelled    boolean not null default false,
+  add column if not exists source       text not null default 'manual';
+create index if not exists delivery_orders_sales_branch_idx
+  on public.delivery_orders (sales_branch, delivery_date);
+
+-- One SO → many DOs, one DO → many SOs (same debtor).
+create table if not exists public.do_sales_orders (
+  do_id uuid not null references public.delivery_orders on delete cascade,
+  so_no text not null,
+  so_id uuid references public.sales_orders on delete set null,
+  primary key (do_id, so_no)
+);
+create index if not exists do_sales_orders_so_no_idx on public.do_sales_orders (so_no);
+create index if not exists do_sales_orders_so_id_idx on public.do_sales_orders (so_id);
+alter table public.do_sales_orders enable row level security;
+drop policy if exists "staff all" on public.do_sales_orders;
+create policy "staff all" on public.do_sales_orders for all using (public.is_staff()) with check (public.is_staff());
+grant select, insert, update, delete on public.do_sales_orders to authenticated;
+
+-- Existing app-made DOs: record their one SO as a link.
+insert into public.do_sales_orders (do_id, so_no, so_id)
+select id, so_no, so_id from public.delivery_orders where so_id is not null and so_no <> ''
+on conflict do nothing;
+
+-- ---------- After an AutoCount import: tie SOs and DOs together --------
+-- Fills do_sales_orders.so_id by SO number, copies the SOs' Remark 1 and
+-- Delivery Phone onto their DOs (drivers can't read sales_orders), and
+-- marks SOs that have a (non-cancelled) DO as fulfilled.
+create or replace function public.sync_autocount_links() returns void
+language sql security invoker set search_path = '' as $$
+  update public.do_sales_orders l set so_id = s.id
+  from public.sales_orders s
+  where upper(s.so_no) = upper(l.so_no) and l.so_id is distinct from s.id;
+
+  with agg as (
+    select l.do_id,
+      (array_agg(s.id order by s.so_no) filter (where s.id is not null))[1] as so_id,
+      string_agg(distinct nullif(trim(s.remarks), ''), ' / ') as remarks,
+      (array_agg(nullif(trim(s.phone), '') order by s.so_no) filter (where nullif(trim(s.phone), '') is not null))[1] as phone
+    from public.do_sales_orders l
+    left join public.sales_orders s on s.id = l.so_id
+    group by l.do_id
+  )
+  update public.delivery_orders d set
+    so_id = agg.so_id,
+    remarks = agg.remarks,
+    contact_phone = coalesce(agg.phone, d.contact_phone)
+  from agg
+  where d.id = agg.do_id
+    and (d.so_id is distinct from agg.so_id
+      or d.remarks is distinct from agg.remarks
+      or d.contact_phone is distinct from coalesce(agg.phone, d.contact_phone));
+
+  with st as (
+    select s.id,
+      case when exists (
+        select 1 from public.do_sales_orders l
+        join public.delivery_orders d on d.id = l.do_id
+        where l.so_id = s.id and not d.cancelled
+      ) then 'fulfilled'::public.so_status else 'open'::public.so_status end as status
+    from public.sales_orders s
+    where s.status <> 'cancelled'
+  )
+  update public.sales_orders s set status = st.status
+  from st
+  where s.id = st.id and s.status <> st.status;
+$$;
+
 -- ---------- After upgrading: set users' branch and lorry number --------
 -- update profiles set branch = 'GP', lorry_no = '93' where full_name = 'Azli';

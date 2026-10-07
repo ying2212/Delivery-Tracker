@@ -4,6 +4,7 @@ import { driverLabel, fmtDate, todayMY } from "@/lib/format";
 import { DO_STATUSES, DO_STATUS_LABEL, type DeliveryOrder, type DoStatus, type Profile } from "@/lib/types";
 import { AssignDriver } from "@/components/AssignDriver";
 import { RealtimeRefresh } from "@/components/RealtimeRefresh";
+import { BranchTags, SoLinks } from "@/components/DocLinks";
 
 const COLUMN_DOT: Record<DoStatus, string> = {
   pending: "bg-slate-400",
@@ -57,7 +58,8 @@ export default async function DeliveriesPage({
   // Searching a DO number looks across all dates — it's usually an older DO someone is asking about.
   let query = supabase
     .from("delivery_orders")
-    .select("*, driver:profiles!delivery_orders_driver_id_fkey(full_name, lorry_no), do_items(id)")
+    .select("*, driver:profiles!delivery_orders_driver_id_fkey(full_name, lorry_no), do_items(id), links:do_sales_orders(so_no, so_id)")
+    .eq("cancelled", false)
     .in("status", statuses)
     .order("delivery_date")
     .order("created_at");
@@ -157,15 +159,14 @@ export default async function DeliveriesPage({
               <div className="space-y-2">
                 {col.map((j) => (
                   <article key={j.id} className="card space-y-2 p-3">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-semibold text-slate-900">
-                        {j.do_no}
-                        {j.branch && <span className="ml-1.5 rounded bg-slate-100 px-1.5 font-medium text-slate-600">{j.branch}</span>}
-                      </span>
-                      <Link href={`/orders/${j.so_id}`} className="text-brand-700 hover:underline">{j.so_no}</Link>
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className="font-semibold text-slate-900">{j.do_no}</span>
+                      <BranchTags job={j} />
                     </div>
+                    <SoLinks job={j} className="block text-xs text-slate-500" />
                     <p className="text-sm font-medium leading-snug">{j.customer_name}</p>
                     {j.address && <p className="line-clamp-2 text-xs text-slate-500">{j.address}</p>}
+                    {j.remarks && <p className="line-clamp-2 rounded bg-amber-50 px-1.5 py-0.5 text-xs text-amber-800">{j.remarks}</p>}
                     <div className="flex items-center gap-2 text-xs text-slate-400">
                       <span>{j.do_items?.length ?? 0} items</span>
                       {j.status !== "delivered" && j.delivery_date < today ? (

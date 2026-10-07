@@ -34,8 +34,9 @@ export default async function DriversPage({
   if (drivers.length) {
     const { data } = await supabase
       .from("delivery_orders")
-      .select("*, do_items(id)")
+      .select("*, do_items(id), links:do_sales_orders(so_no, so_id)")
       .in("driver_id", drivers.map((d) => d.id))
+      .eq("cancelled", false)
       .gte("delivery_date", dates[0])
       .lte("delivery_date", dates[dates.length - 1])
       .order("trip_no")

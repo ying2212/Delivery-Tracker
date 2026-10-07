@@ -6,8 +6,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 import { getSession, requireStaff } from "@/lib/auth";
 import { driverLabel } from "@/lib/format";
-import { upsertSalesOrders, type SoImportRow, type ImportResult } from "@/lib/import";
-import type { DoStatus, SoItemProgress } from "@/lib/types";
+import { importAcDeliveryOrders, importAcSalesOrders } from "@/lib/autocount";
+import type { AcImport, AcImportResult } from "@/lib/autocount-rows";
+import type { DoStatus } from "@/lib/types";
 
 // ---------- Auth ------------------------------------------------------
 
@@ -27,86 +28,22 @@ export async function signOut() {
   redirect("/login");
 }
 
-// ---------- Sales orders ----------------------------------------------
+// ---------- AutoCount import -----------------------------------------
 
-export async function importSalesOrders(
-  rows: SoImportRow[],
-  source: "csv" | "manual" = "csv"
-): Promise<ImportResult> {
+/** Saves an AutoCount SO or DO listing (parsed in the browser from the Excel export). */
+export async function importAutoCount(data: AcImport): Promise<AcImportResult> {
   const { supabase } = await requireStaff();
-  const result = await upsertSalesOrders(supabase, rows, source);
+  const result =
+    data.kind === "so"
+      ? await importAcSalesOrders(supabase, data.rows)
+      : await importAcDeliveryOrders(supabase, data.rows);
   revalidatePath("/orders");
+  revalidatePath("/deliveries");
+  revalidatePath("/drivers");
   return result;
 }
 
-async function recomputeSoStatus(supabase: SupabaseClient, soId: string) {
-  const { data: so } = await supabase.from("sales_orders").select("status").eq("id", soId).single();
-  if (!so || so.status === "cancelled") return;
-  const { data: lines } = await supabase.from("so_item_progress").select("qty_on_do, qty_remaining").eq("so_id", soId);
-  if (!lines?.length) return;
-  const status = lines.every((l) => Number(l.qty_remaining) <= 0)
-    ? "fulfilled"
-    : lines.some((l) => Number(l.qty_on_do) > 0)
-      ? "partial"
-      : "open";
-  await supabase.from("sales_orders").update({ status }).eq("id", soId);
-}
-
 // ---------- Delivery orders (staff) ----------------------------------
-
-export async function createDeliveryOrder(formData: FormData) {
-  const { supabase } = await requireStaff();
-  const soId = String(formData.get("so_id"));
-  const driverId = String(formData.get("driver_id") || "") || null;
-  const branch = String(formData.get("branch") || "").trim() || null;
-
-  const { data: so } = await supabase.from("sales_orders").select("*").eq("id", soId).single();
-  if (!so) throw new Error("Sales order not found");
-
-  const { data: lines } = await supabase.from("so_item_progress").select("*").eq("so_id", soId);
-  const items = ((lines ?? []) as SoItemProgress[])
-    .map((l) => ({ line: l, qty: Math.min(Number(formData.get(`qty_${l.id}`) || 0), Number(l.qty_remaining)) }))
-    .filter((x) => x.qty > 0);
-  if (items.length === 0) throw new Error("Enter a quantity for at least one item.");
-
-  const { data: delivery, error } = await supabase
-    .from("delivery_orders")
-    .insert({
-      so_id: soId,
-      so_no: so.so_no,
-      customer_name: so.customer_name,
-      contact_phone: String(formData.get("contact_phone") || "") || so.phone,
-      address: String(formData.get("address") || "") || so.address,
-      delivery_date: String(formData.get("delivery_date")),
-      branch,
-      driver_id: driverId,
-      status: driverId ? "assigned" : "pending",
-    })
-    .select("id, do_no")
-    .single();
-  if (error || !delivery) throw new Error(error?.message ?? "Could not create DO");
-
-  await supabase.from("do_items").insert(
-    items.map(({ line, qty }) => ({
-      do_id: delivery.id,
-      so_item_id: line.id,
-      item_code: line.item_code,
-      description: line.description,
-      uom: line.uom,
-      qty,
-    }))
-  );
-  await supabase.from("status_events").insert({
-    so_id: soId,
-    do_id: delivery.id,
-    status: driverId ? "assigned" : "do_created",
-    note: `${delivery.do_no} created`,
-  });
-  await recomputeSoStatus(supabase, soId);
-
-  revalidatePath(`/orders/${soId}`);
-  revalidatePath("/deliveries");
-}
 
 export async function assignDriver(formData: FormData) {
   const { supabase } = await requireStaff();
@@ -138,7 +75,7 @@ export async function assignDriver(formData: FormData) {
   });
 
   revalidatePath("/deliveries");
-  revalidatePath(`/orders/${current.so_id}`);
+  revalidatePath("/orders/[id]", "page"); // a DO can belong to several SOs
 }
 
 // ---------- Trip planning (Driver status page) -----------------------
@@ -213,7 +150,7 @@ export async function moveToTrip(input: {
   revalidatePath("/drivers");
   revalidatePath("/deliveries");
   revalidatePath("/driver");
-  revalidatePath(`/orders/${current.so_id}`);
+  revalidatePath("/orders/[id]", "page"); // a DO can belong to several SOs
 }
 
 // ---------- Delivery status (drivers + staff) ------------------------
@@ -223,7 +160,7 @@ async function logAndRevalidate(supabase: SupabaseClient, doId: string, status: 
   await supabase.from("status_events").insert({ so_id: d?.so_id, do_id: doId, status, note: note || null });
   revalidatePath("/driver");
   revalidatePath("/deliveries");
-  if (d) revalidatePath(`/orders/${d.so_id}`);
+  revalidatePath("/orders/[id]", "page");
 }
 
 export async function startDelivery(doId: string) {

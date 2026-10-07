@@ -15,7 +15,7 @@ export const DO_STATUS_LABEL: Record<DoStatus, string> = {
 export const SO_STATUS_LABEL: Record<SoStatus, string> = {
   open: "Open",
   partial: "Partially on DO",
-  fulfilled: "Fully on DO",
+  fulfilled: "On DO",
   cancelled: "Cancelled",
 };
 
@@ -30,35 +30,41 @@ export type SalesOrder = {
   phone: string | null;
   address: string | null;
   branch: string | null;
+  sales_location: string | null;
+  agent: string | null;
+  credit_term: string | null;
+  total: number | null;
   remarks: string | null;
+  transfer_to: string | null;
+  icb_from_po: string | null;
+  created_user: string | null;
+  ac_created_at: string | null;
   status: SoStatus;
   source: string;
 };
 
-export type SoItemProgress = {
-  id: string;
-  so_id: string;
-  line_no: number;
-  item_code: string;
-  description: string | null;
-  uom: string | null;
-  qty: number;
-  qty_on_do: number;
-  qty_remaining: number;
-};
+/** A DO's link to one of its SOs (one DO can come from several SOs). */
+export type DoSoLink = { so_no: string; so_id: string | null };
 
 export type DoItem = { id: string; item_code: string; description: string | null; uom: string | null; qty: number };
 
 export type DeliveryOrder = {
   id: string;
   do_no: string;
-  so_id: string;
-  so_no: string;
+  so_id: string | null; // first linked SO; all of them are in `links`
+  so_no: string; // "GPS-00030782, GPS-00030788"
   customer_name: string;
   contact_phone: string | null;
   address: string | null;
+  remarks: string | null;
   delivery_date: string;
-  branch: string | null;
+  branch: string | null; // delivering branch
+  sales_branch: string | null; // agent's branch
+  ref: string | null;
+  total: number | null;
+  invoice_no: string | null;
+  created_user: string | null;
+  cancelled: boolean;
   driver_id: string | null;
   trip_no: number;
   trip_seq: number;
@@ -68,6 +74,7 @@ export type DeliveryOrder = {
   delivered_at: string | null;
   driver?: { full_name: string; lorry_no: string | null } | null;
   do_items?: DoItem[];
+  links?: DoSoLink[];
 };
 
 export type StatusEvent = {

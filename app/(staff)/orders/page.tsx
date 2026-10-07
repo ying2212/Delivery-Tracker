@@ -2,6 +2,7 @@ import Link from "next/link";
 import { requireStaff } from "@/lib/auth";
 import { SoBadge, DoBadge } from "@/components/StatusBadge";
 import { fmtDate } from "@/lib/format";
+import { branchName } from "@/lib/branches";
 import type { DoStatus, SoStatus } from "@/lib/types";
 
 const TABS: { value: string; label: string }[] = [
@@ -19,7 +20,7 @@ type Row = {
   address: string | null;
   branch: string | null;
   status: SoStatus;
-  delivery_orders: { status: DoStatus }[];
+  links: { delivery_orders: { do_no: string; status: DoStatus; cancelled: boolean } | null }[];
 };
 
 /** Builds "/orders?…" from the filters, dropping empty ones ("All" must not fall back to the current URL). */
@@ -39,28 +40,28 @@ export default async function OrdersPage({
 
   let query = supabase
     .from("sales_orders")
-    .select("id, so_no, so_date, customer_name, address, branch, status, delivery_orders(status)")
+    .select("id, so_no, so_date, customer_name, address, branch, status, links:do_sales_orders(delivery_orders(do_no, status, cancelled))")
     .order("so_date", { ascending: false })
     .order("so_no", { ascending: false })
     .limit(200);
   const term = q.replace(/[,()%]/g, " ").trim();
-  if (term) query = query.or(`so_no.ilike.%${term}%,customer_name.ilike.%${term}%`);
+  if (term) query = query.or(`so_no.ilike.%${term}%,customer_name.ilike.%${term}%,transfer_to.ilike.%${term}%`);
   const locTerm = loc.replace(/[,()%]/g, " ").trim();
   if (locTerm) query = query.or(`address.ilike.%${locTerm}%,branch.ilike.%${locTerm}%`);
   if (status) query = query.eq("status", status);
   if (from) query = query.gte("so_date", from);
   if (to) query = query.lte("so_date", to);
   const { data } = await query;
-  const orders = (data ?? []) as Row[];
+  const orders = (data ?? []) as unknown as Row[];
 
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Sales orders</h1>
-          <p className="text-sm text-slate-500">Create delivery orders from here.</p>
+          <p className="text-sm text-slate-500">Imported from AutoCount, with the DOs they were transferred to.</p>
         </div>
-        <Link href="/orders/new" className="btn-primary">+ New order</Link>
+        <Link href="/import" className="btn-primary">Import from AutoCount</Link>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -79,7 +80,7 @@ export default async function OrdersPage({
         </div>
         <form className="flex min-w-56 flex-1 flex-wrap items-center gap-2">
           {status && <input type="hidden" name="status" value={status} />}
-          <input name="q" defaultValue={q} placeholder="Search SO no. or customer…" className="input min-w-48 flex-1" />
+          <input name="q" defaultValue={q} placeholder="Search SO no., DO no. or customer…" className="input min-w-48 flex-1" />
           <input name="loc" defaultValue={loc} placeholder="Search location…" className="input min-w-40 flex-1" />
           <label className="flex items-center gap-1.5 text-sm text-slate-500">
             From <input type="date" name="from" defaultValue={from} className="input w-auto" />
@@ -100,7 +101,7 @@ export default async function OrdersPage({
             {q || loc || status || from || to ? (
               "No sales orders match these filters."
             ) : (
-              <>No sales orders yet. <Link href="/import" className="font-medium text-brand-700">Import a CSV</Link> or create one.</>
+              <>No sales orders yet. <Link href="/import" className="font-medium text-brand-700">Import them from AutoCount</Link>.</>
             )}
           </p>
         ) : (
@@ -127,12 +128,16 @@ export default async function OrdersPage({
                     <span className="line-clamp-2">{o.address ?? "—"}</span>
                   </td>
                   <td className="hidden px-4 py-3 text-slate-500 md:table-cell">{fmtDate(o.so_date)}</td>
-                  <td className="hidden px-4 py-3 text-slate-500 lg:table-cell">{o.branch ?? "—"}</td>
+                  <td className="hidden px-4 py-3 text-slate-500 lg:table-cell" title={branchName(o.branch)}>{o.branch ?? "—"}</td>
                   <td className="px-4 py-3"><SoBadge status={o.status} /></td>
                   <td className="hidden px-4 py-3 sm:table-cell">
                     <div className="flex flex-wrap gap-1">
-                      {o.delivery_orders.length === 0 ? <span className="text-slate-400">—</span> :
-                        o.delivery_orders.map((d, i) => <DoBadge key={i} status={d.status} />)}
+                      {o.links.length === 0 ? <span className="text-slate-400">—</span> :
+                        o.links.map((l) => l.delivery_orders).filter((d) => !!d).map((d) => (
+                          <span key={d.do_no} title={d.do_no} className={d.cancelled ? "line-through opacity-50" : ""}>
+                            <DoBadge status={d.status} />
+                          </span>
+                        ))}
                     </div>
                   </td>
                 </tr>

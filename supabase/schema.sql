@@ -54,11 +54,19 @@ create table public.sales_orders (
   debtor_code   text,                          -- AutoCount DebtorCode
   customer_name text not null,
   phone         text,
-  address       text,
-  branch        text,
-  remarks       text,
+  address       text,                          -- AutoCount Delivery Address 1
+  branch        text,                          -- selling branch (from Sales Location), e.g. GP
+  sales_location text,                         -- AutoCount Sales Location as exported, e.g. GPS / KP
+  agent         text,
+  credit_term   text,
+  total         numeric(14, 2),
+  remarks       text,                          -- AutoCount Remark 1 (delivery instructions)
+  transfer_to   text,                          -- AutoCount Transfer To: the DO number(s), as exported
+  icb_from_po   text,
+  created_user  text,                          -- AutoCount Created User
+  ac_created_at timestamptz,                   -- AutoCount Created Time
   status        public.so_status not null default 'open',
-  source        text not null default 'manual', -- manual | csv | autocount
+  source        text not null default 'manual', -- manual | autocount
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()
 );
@@ -77,21 +85,30 @@ create table public.so_items (
 create index on public.so_items (so_id);
 
 -- ---------- Delivery orders ------------------------------------------
--- Customer/address/phone are copied from the SO so drivers never need
--- access to the sales_orders table.
+-- DOs come from AutoCount. Customer/address/phone/remarks are copied onto
+-- the DO so drivers never need access to the sales_orders table.
+-- AutoCount owns the document fields; the app owns driver/trip/status.
 create sequence public.do_no_seq;
 
 create table public.delivery_orders (
   id             uuid primary key default gen_random_uuid(),
   do_no          text not null unique
                  default 'DO-' || lpad(nextval('public.do_no_seq')::text, 6, '0'),
-  so_id          uuid not null references public.sales_orders on delete restrict,
-  so_no          text not null,
+  so_id          uuid references public.sales_orders on delete set null, -- first linked SO (for links); all links in do_sales_orders
+  so_no          text not null default '',     -- AutoCount Transfer From: the SO number(s), as exported
   customer_name  text not null,
   contact_phone  text,
-  address        text,
+  address        text,                         -- AutoCount Delivery Address 1
+  remarks        text,                         -- Remark 1 of the linked SO(s)
   delivery_date  date not null default current_date,
-  branch         text,                         -- delivering branch/location (GP, PD, …); one SO can span several
+  branch         text,                         -- delivering branch, from the DO number prefix (GPD → GP)
+  sales_branch   text,                         -- agent's branch, from Sales Location; follows the DO too
+  ref            text,                         -- AutoCount Ref. (customer PO etc.)
+  total          numeric(14, 2),
+  invoice_no     text,                         -- AutoCount Transfer To (invoice)
+  created_user   text,                         -- AutoCount Created User
+  cancelled      boolean not null default false,
+  source         text not null default 'manual', -- manual | autocount
   driver_id      uuid references public.profiles on delete set null,
   trip_no        int not null default 1 check (trip_no > 0), -- which trip of the driver's day
   trip_seq       int not null default 0,                     -- stop order inside the trip
@@ -107,7 +124,20 @@ create index on public.delivery_orders (driver_id, delivery_date);
 create index on public.delivery_orders (delivery_date, status);
 create index on public.delivery_orders (so_id);
 create index delivery_orders_branch_idx on public.delivery_orders (branch, delivery_date);
+create index delivery_orders_sales_branch_idx on public.delivery_orders (sales_branch, delivery_date);
 create index delivery_orders_trip_idx on public.delivery_orders (driver_id, delivery_date, trip_no, trip_seq);
+
+-- One SO can be split over many DOs (trips); one DO can combine many SOs
+-- of the same debtor. Linked by SO number, so a DO can be imported before
+-- its SO; so_id is filled in when the SO arrives.
+create table public.do_sales_orders (
+  do_id uuid not null references public.delivery_orders on delete cascade,
+  so_no text not null,
+  so_id uuid references public.sales_orders on delete set null,
+  primary key (do_id, so_no)
+);
+create index on public.do_sales_orders (so_no);
+create index on public.do_sales_orders (so_id);
 
 create table public.do_items (
   id          uuid primary key default gen_random_uuid(),
@@ -144,12 +174,57 @@ from public.so_items i
 left join public.do_items d on d.so_item_id = i.id
 group by i.id;
 
+-- ---------- After an AutoCount import: tie SOs and DOs together --------
+-- Fills do_sales_orders.so_id by SO number, copies the SOs' Remark 1 and
+-- Delivery Phone onto their DOs (drivers can't read sales_orders), and
+-- marks SOs that have a (non-cancelled) DO as fulfilled.
+create or replace function public.sync_autocount_links() returns void
+language sql security invoker set search_path = '' as $$
+  update public.do_sales_orders l set so_id = s.id
+  from public.sales_orders s
+  where upper(s.so_no) = upper(l.so_no) and l.so_id is distinct from s.id;
+
+  with agg as (
+    select l.do_id,
+      (array_agg(s.id order by s.so_no) filter (where s.id is not null))[1] as so_id,
+      string_agg(distinct nullif(trim(s.remarks), ''), ' / ') as remarks,
+      (array_agg(nullif(trim(s.phone), '') order by s.so_no) filter (where nullif(trim(s.phone), '') is not null))[1] as phone
+    from public.do_sales_orders l
+    left join public.sales_orders s on s.id = l.so_id
+    group by l.do_id
+  )
+  update public.delivery_orders d set
+    so_id = agg.so_id,
+    remarks = agg.remarks,
+    contact_phone = coalesce(agg.phone, d.contact_phone)
+  from agg
+  where d.id = agg.do_id
+    and (d.so_id is distinct from agg.so_id
+      or d.remarks is distinct from agg.remarks
+      or d.contact_phone is distinct from coalesce(agg.phone, d.contact_phone));
+
+  with st as (
+    select s.id,
+      case when exists (
+        select 1 from public.do_sales_orders l
+        join public.delivery_orders d on d.id = l.do_id
+        where l.so_id = s.id and not d.cancelled
+      ) then 'fulfilled'::public.so_status else 'open'::public.so_status end as status
+    from public.sales_orders s
+    where s.status <> 'cancelled'
+  )
+  update public.sales_orders s set status = st.status
+  from st
+  where s.id = st.id and s.status <> st.status;
+$$;
+
 -- ---------- Row Level Security ---------------------------------------
 alter table public.profiles        enable row level security;
 alter table public.sales_orders    enable row level security;
 alter table public.so_items        enable row level security;
 alter table public.delivery_orders enable row level security;
 alter table public.do_items        enable row level security;
+alter table public.do_sales_orders enable row level security;
 alter table public.status_events   enable row level security;
 
 -- Profiles: see yourself; staff see everyone; admins edit roles.
@@ -161,6 +236,7 @@ create policy "staff all" on public.sales_orders    for all using (public.is_sta
 create policy "staff all" on public.so_items        for all using (public.is_staff()) with check (public.is_staff());
 create policy "staff all" on public.delivery_orders for all using (public.is_staff()) with check (public.is_staff());
 create policy "staff all" on public.do_items        for all using (public.is_staff()) with check (public.is_staff());
+create policy "staff all" on public.do_sales_orders for all using (public.is_staff()) with check (public.is_staff());
 create policy "staff all" on public.status_events   for all using (public.is_staff()) with check (public.is_staff());
 
 -- Drivers: only their own delivery jobs.

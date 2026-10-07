@@ -1,40 +1,51 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireStaff } from "@/lib/auth";
-import { listBranches } from "@/lib/branches";
-import { createDeliveryOrder } from "@/app/actions";
+import { branchName } from "@/lib/branches";
+import { splitDocNos } from "@/lib/autocount-rows";
 import { DoBadge, SoBadge } from "@/components/StatusBadge";
-import { driverLabel, fmtDate, fmtDateTime, fmtQty, todayMY } from "@/lib/format";
-import { DO_STATUS_LABEL, type DeliveryOrder, type DoStatus, type Profile, type SalesOrder, type SoItemProgress, type StatusEvent } from "@/lib/types";
+import { driverLabel, fmtDate, fmtDateTime, fmtMoney, fmtQty } from "@/lib/format";
+import { DO_STATUS_LABEL, type DeliveryOrder, type DoStatus, type SalesOrder, type StatusEvent } from "@/lib/types";
 
 const EVENT_LABEL: Record<string, string> = { so_created: "Order created", do_created: "DO created", ...DO_STATUS_LABEL };
 
+type Item = { id: string; item_code: string; description: string | null; uom: string | null; qty: number };
+
 export default async function OrderDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { supabase, profile } = await requireStaff();
+  const { supabase } = await requireStaff();
 
-  const [{ data: so }, { data: items }, { data: dos }, { data: events }, { data: drivers }, branches] = await Promise.all([
+  const [{ data: so }, { data: items }, { data: linkRows }] = await Promise.all([
     supabase.from("sales_orders").select("*").eq("id", id).single<SalesOrder>(),
-    supabase.from("so_item_progress").select("*").eq("so_id", id).order("line_no"),
-    supabase
-      .from("delivery_orders")
-      .select("*, driver:profiles!delivery_orders_driver_id_fkey(full_name, lorry_no), do_items(id, item_code, description, uom, qty)")
-      .eq("so_id", id)
-      .order("created_at"),
-    supabase
-      .from("status_events")
-      .select("id, status, note, created_at, do_id, actor:profiles!status_events_actor_id_fkey(full_name)")
-      .eq("so_id", id)
-      .order("created_at", { ascending: false }),
-    supabase.from("profiles").select("id, full_name, lorry_no").eq("role", "driver").order("full_name"),
-    listBranches(supabase),
+    supabase.from("so_items").select("id, item_code, description, uom, qty").eq("so_id", id).order("line_no"),
+    supabase.from("do_sales_orders").select("do_id").eq("so_id", id),
   ]);
   if (!so) notFound();
 
-  const lines = (items ?? []) as SoItemProgress[];
+  // One SO can be split over several DOs; each DO may also carry other SOs of the same debtor.
+  const doIds = (linkRows ?? []).map((l) => l.do_id as string);
+  const [{ data: dos }, { data: events }] = await Promise.all([
+    doIds.length
+      ? supabase
+          .from("delivery_orders")
+          .select("*, driver:profiles!delivery_orders_driver_id_fkey(full_name, lorry_no), do_items(id, item_code, description, uom, qty), links:do_sales_orders(so_no, so_id)")
+          .in("id", doIds)
+          .order("do_no")
+      : Promise.resolve({ data: [] }),
+    supabase
+      .from("status_events")
+      .select("id, status, note, created_at, do_id, actor:profiles!status_events_actor_id_fkey(full_name)")
+      .or(doIds.length ? `so_id.eq.${id},do_id.in.(${doIds.join(",")})` : `so_id.eq.${id}`)
+      .order("created_at", { ascending: false })
+      .limit(100),
+  ]);
+
+  const lines = (items ?? []) as Item[];
   const deliveries = (dos ?? []) as DeliveryOrder[];
+  const doNoById = new Map(deliveries.map((d) => [d.id, d.do_no]));
   const timeline = (events ?? []) as unknown as StatusEvent[];
-  const remaining = lines.filter((l) => Number(l.qty_remaining) > 0);
+  // DOs AutoCount says this SO went to, but whose DO file hasn't been imported yet.
+  const notImported = splitDocNos(so.transfer_to).filter((no) => !deliveries.some((d) => d.do_no === no));
 
   // Signed links (valid 1 hour) for proof-of-delivery photos
   const photoUrls: Record<string, string> = {};
@@ -58,15 +69,32 @@ export default async function OrderDetail({ params }: { params: Promise<{ id: st
             </div>
             <p className="mt-1 text-slate-600">{so.customer_name}{so.debtor_code && <span className="text-slate-400"> · {so.debtor_code}</span>}</p>
           </div>
-          <span className="text-xs text-slate-400">Source: {so.source}</span>
+          <div className="text-right">
+            <p className="text-xl font-semibold tabular-nums">{fmtMoney(so.total)}</p>
+            <p className="text-xs text-slate-400">Source: {so.source}</p>
+          </div>
         </div>
+        {so.remarks && (
+          <p className="mt-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
+            <span className="font-medium">Remark: </span>{so.remarks}
+          </p>
+        )}
         <dl className="mt-5 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
           <Field label="Order date" value={fmtDate(so.so_date)} />
-          <Field label="Phone" value={so.phone} />
-          <Field label="Branch" value={so.branch} />
-          <Field label="Address" value={so.address} />
+          <Field label="Delivery phone" value={so.phone} />
+          <Field label="Sales location" value={so.branch ? `${branchName(so.branch)} (${so.sales_location ?? so.branch})` : so.sales_location} />
+          <Field label="Agent" value={so.agent} />
+          <Field label="Credit term" value={so.credit_term} />
+          <Field label="Transfer to (DO)" value={so.transfer_to} />
+          <Field
+            label="Created in AutoCount"
+            value={[so.created_user, so.ac_created_at && fmtDateTime(so.ac_created_at)].filter(Boolean).join(" · ")}
+          />
+          {so.icb_from_po && <Field label="ICB from PO" value={so.icb_from_po} />}
+          <div className="sm:col-span-2 lg:col-span-4">
+            <Field label="Delivery address" value={so.address} />
+          </div>
         </dl>
-        {so.remarks && <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{so.remarks}</p>}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
@@ -74,123 +102,85 @@ export default async function OrderDetail({ params }: { params: Promise<{ id: st
           {/* Items */}
           <section className="card overflow-hidden">
             <h2 className="border-b border-slate-100 px-5 py-3 font-semibold">Items</h2>
-            <table className="w-full text-sm">
-              <thead className="text-left text-xs text-slate-500">
-                <tr>
-                  <th className="px-5 py-2">Item</th>
-                  <th className="px-3 py-2 text-right">Ordered</th>
-                  <th className="px-3 py-2 text-right">On DO</th>
-                  <th className="px-5 py-2 text-right">Remaining</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {lines.map((l) => (
-                  <tr key={l.id}>
-                    <td className="px-5 py-2.5">
-                      <div className="font-medium">{l.item_code}</div>
-                      <div className="text-xs text-slate-500">{l.description}</div>
-                    </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums">{fmtQty(l.qty)} {l.uom}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums">{fmtQty(l.qty_on_do)}</td>
-                    <td className={`px-5 py-2.5 text-right font-medium tabular-nums ${Number(l.qty_remaining) > 0 ? "text-amber-700" : "text-emerald-700"}`}>
-                      {fmtQty(l.qty_remaining)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            {lines.length === 0 ? (
+              <p className="px-5 py-4 text-sm text-slate-500">No item lines imported.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <tbody className="divide-y divide-slate-100">
+                  {lines.map((l) => (
+                    <tr key={l.id}>
+                      <td className="px-5 py-2.5">
+                        <div className="font-medium">{l.item_code}</div>
+                        <div className="text-xs text-slate-500">{l.description}</div>
+                      </td>
+                      <td className="px-5 py-2.5 text-right tabular-nums">{fmtQty(l.qty)} {l.uom}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </section>
 
           {/* Delivery orders */}
           <section className="space-y-3">
-            <h2 className="font-semibold">Delivery orders</h2>
-            {deliveries.length === 0 && <p className="text-sm text-slate-500">None yet.</p>}
-            {deliveries.map((d) => (
-              <div key={d.id} className="card p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-3">
-                    <span className="font-semibold">{d.do_no}</span>
-                    <DoBadge status={d.status as DoStatus} />
-                  </div>
-                  <span className="text-sm text-slate-500">
-                    {d.branch && `${d.branch} · `}{fmtDate(d.delivery_date)} · {d.driver ? driverLabel(d.driver) : "No driver"}
-                  </span>
-                </div>
-                <p className="mt-2 text-sm text-slate-600">
-                  {d.do_items?.map((i) => `${i.item_code} × ${fmtQty(i.qty)}`).join(", ")}
-                </p>
-                {d.failed_reason && <p className="mt-2 text-sm text-rose-600">Failed: {d.failed_reason}</p>}
-                {photoUrls[d.id] && (
-                  <a href={photoUrls[d.id]} target="_blank" className="mt-3 inline-block">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={photoUrls[d.id]} alt="Proof of delivery" className="h-24 rounded-lg border border-slate-200 object-cover" />
-                  </a>
-                )}
-              </div>
-            ))}
-          </section>
-
-          {/* Create DO */}
-          {remaining.length > 0 && so.status !== "cancelled" && (
-            <section className="card p-5">
-              <h2 className="font-semibold">Create delivery order</h2>
-              <p className="mb-4 text-sm text-slate-500">Lower the quantities for a partial delivery.</p>
-              <form action={createDeliveryOrder} className="space-y-4">
-                <input type="hidden" name="so_id" value={so.id} />
-                <div className="space-y-2">
-                  {remaining.map((l) => (
-                    <div key={l.id} className="flex items-center gap-3 rounded-xl bg-slate-50 px-3 py-2">
-                      <div className="flex-1 text-sm">
-                        <span className="font-medium">{l.item_code}</span>{" "}
-                        <span className="text-slate-500">{l.description}</span>
-                      </div>
-                      <input
-                        name={`qty_${l.id}`}
-                        type="number"
-                        step="any"
-                        min={0}
-                        max={l.qty_remaining}
-                        defaultValue={l.qty_remaining}
-                        className="input w-24 text-right"
-                      />
-                      <span className="w-10 text-xs text-slate-500">{l.uom}</span>
+            <h2 className="font-semibold">
+              Delivery orders <span className="font-normal text-slate-400">({deliveries.length})</span>
+            </h2>
+            {deliveries.length === 0 && notImported.length === 0 && <p className="text-sm text-slate-500">None yet.</p>}
+            {deliveries.map((d) => {
+              const otherSos = (d.links ?? []).filter((l) => l.so_no !== so.so_no);
+              return (
+                <div key={d.id} className={`card p-4 ${d.cancelled ? "opacity-60" : ""}`}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold">{d.do_no}</span>
+                      {d.cancelled ? (
+                        <span className="rounded-md bg-slate-200 px-2 py-0.5 text-xs font-medium text-slate-600">Cancelled</span>
+                      ) : (
+                        <DoBadge status={d.status as DoStatus} />
+                      )}
+                      {d.branch && (
+                        <span className="rounded bg-slate-100 px-1.5 text-xs font-medium text-slate-600" title={`Delivered by ${branchName(d.branch)}`}>
+                          by {d.branch}
+                        </span>
+                      )}
                     </div>
-                  ))}
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <label className="label">Delivery date</label>
-                    <input name="delivery_date" type="date" defaultValue={todayMY()} required className="input" />
+                    <span className="text-sm text-slate-500">
+                      {fmtDate(d.delivery_date)} · {d.driver ? driverLabel(d.driver) : "No driver"}
+                    </span>
                   </div>
-                  <div>
-                    <label className="label">Branch (delivering location)</label>
-                    <select name="branch" className="input" defaultValue={profile.branch ?? ""}>
-                      <option value="">No branch</option>
-                      {branches.map((b) => <option key={b}>{b}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="label">Driver</label>
-                    <select name="driver_id" className="input" defaultValue="">
-                      <option value="">Assign later</option>
-                      {(drivers as Pick<Profile, "id" | "full_name" | "lorry_no">[] | null)?.map((d) => (
-                        <option key={d.id} value={d.id}>{driverLabel(d)}</option>
+                  <p className="mt-2 text-sm text-slate-600">
+                    {d.do_items?.map((i) => `${i.description || i.item_code} × ${fmtQty(i.qty)}`).join(", ")}
+                    {d.total != null && <span className="text-slate-400"> · {fmtMoney(d.total)}</span>}
+                    {d.ref && <span className="text-slate-400"> · Ref. {d.ref}</span>}
+                  </p>
+                  {otherSos.length > 0 && (
+                    <p className="mt-1 text-xs text-slate-500">
+                      Same trip also carries{" "}
+                      {otherSos.map((l, i) => (
+                        <span key={l.so_no}>
+                          {i > 0 && ", "}
+                          {l.so_id ? <Link href={`/orders/${l.so_id}`} className="text-brand-700 hover:underline">{l.so_no}</Link> : l.so_no}
+                        </span>
                       ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="label">Contact phone</label>
-                    <input name="contact_phone" defaultValue={so.phone ?? ""} className="input" />
-                  </div>
-                  <div>
-                    <label className="label">Delivery address</label>
-                    <input name="address" defaultValue={so.address ?? ""} className="input" />
-                  </div>
+                    </p>
+                  )}
+                  {d.failed_reason && <p className="mt-2 text-sm text-rose-600">Failed: {d.failed_reason}</p>}
+                  {photoUrls[d.id] && (
+                    <a href={photoUrls[d.id]} target="_blank" className="mt-3 inline-block">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={photoUrls[d.id]} alt="Proof of delivery" className="h-24 rounded-lg border border-slate-200 object-cover" />
+                    </a>
+                  )}
                 </div>
-                <button className="btn-primary">Create DO</button>
-              </form>
-            </section>
-          )}
+              );
+            })}
+            {notImported.length > 0 && (
+              <p className="text-sm text-slate-500">
+                In AutoCount but not imported yet: {notImported.join(", ")}
+              </p>
+            )}
+          </section>
         </div>
 
         {/* Timeline */}
@@ -200,7 +190,10 @@ export default async function OrderDetail({ params }: { params: Promise<{ id: st
             {timeline.map((e) => (
               <li key={e.id} className="relative">
                 <span className="absolute -left-[25px] top-1 size-2.5 rounded-full bg-brand-600 ring-4 ring-white" />
-                <p className="text-sm font-medium">{EVENT_LABEL[e.status] ?? e.status}</p>
+                <p className="text-sm font-medium">
+                  {EVENT_LABEL[e.status] ?? e.status}
+                  {e.do_id && doNoById.get(e.do_id) && <span className="font-normal text-slate-400"> · {doNoById.get(e.do_id)}</span>}
+                </p>
                 {e.note && <p className="text-sm text-slate-600">{e.note}</p>}
                 <p className="text-xs text-slate-400">
                   {fmtDateTime(e.created_at)}{e.actor?.full_name && ` · ${e.actor.full_name}`}

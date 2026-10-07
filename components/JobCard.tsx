@@ -44,6 +44,7 @@ export function JobCard({ job, driverName }: { job: DeliveryOrder; driverName: s
         </div>
 
         {job.address && <p className="text-sm text-slate-600">{job.address}</p>}
+        {job.remarks && <p className="rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-900">📝 {job.remarks}</p>}
 
         {!finished && (
           <div className="grid grid-cols-3 gap-2">

@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import Link from "next/link";
 import { moveToTrip } from "@/app/actions";
 import { DoBadge } from "./StatusBadge";
+import { BranchTags, SoLinks } from "./DocLinks";
 import { fmtDate } from "@/lib/format";
 import type { DeliveryOrder, DoStatus } from "@/lib/types";
 
@@ -119,12 +119,12 @@ export function DriverTrips({ drivers, dates, jobs: initial }: { drivers: Driver
                 </div>
                 <p className="text-sm font-medium leading-snug">{j.customer_name}</p>
                 {j.address && <p className="line-clamp-2 text-slate-500">{j.address}</p>}
-                <div className="flex items-center justify-between text-slate-400">
-                  <span>{j.do_items?.length ?? 0} items</span>
-                  <Link href={`/orders/${j.so_id}`} className="text-brand-700 hover:underline" draggable={false}>
-                    {j.so_no}
-                  </Link>
+                {j.remarks && <p className="line-clamp-2 rounded bg-amber-50 px-1.5 py-0.5 text-amber-800">{j.remarks}</p>}
+                <div className="flex items-center justify-between gap-2 text-slate-400">
+                  <span className="whitespace-nowrap">{j.do_items?.length ?? 0} items</span>
+                  <SoLinks job={j} className="truncate text-right" />
                 </div>
+                <BranchTags job={j} />
                 {j.status === "failed" && j.failed_reason && <p className="text-rose-600">{j.failed_reason}</p>}
               </article>
             );
