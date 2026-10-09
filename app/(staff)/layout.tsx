@@ -11,7 +11,7 @@ export default async function StaffLayout({ children }: { children: React.ReactN
       <header className="sticky top-0 z-20 border-b border-slate-200/80 bg-white/80 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-7xl items-center gap-4 px-4">
           <Link href="/deliveries" className="flex items-center gap-2 font-semibold tracking-tight">
-            <span className="grid size-7 place-items-center rounded-lg bg-black text-xs font-bold text-white">KH</span>
+            <img src="/icons/logo.png" alt="" width={28} height={28} className="size-7 rounded-lg" />
             <span className="hidden sm:inline">Delivery Tracker</span>
           </Link>
           <NavLinks />
