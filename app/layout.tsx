@@ -18,7 +18,8 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="min-h-dvh bg-slate-50 font-sans text-slate-900 antialiased">{children}</body>
+      {/* Browser extensions (e.g. Grammarly) add attributes to <body> before React loads. */}
+      <body className="min-h-dvh bg-slate-50 font-sans text-slate-900 antialiased" suppressHydrationWarning>{children}</body>
     </html>
   );
 }

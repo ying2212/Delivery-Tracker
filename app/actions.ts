@@ -7,9 +7,9 @@ import { createClient } from "@/lib/supabase/server";
 import { getSession, requireStaff } from "@/lib/auth";
 import { driverLabel, fmtDate, todayMY } from "@/lib/format";
 import { importAcDeliveryOrders, importAcSalesOrders } from "@/lib/autocount";
-import { mapsEnabled, updateDistances } from "@/lib/geo";
+import { bestRoute, mapsEnabled, updateDistances } from "@/lib/geo";
 import type { AcImport, AcImportResult } from "@/lib/autocount-rows";
-import { canPlan, lockedBranch } from "@/lib/branches";
+import { branchName, canPlan, lockedBranch, storeAddress } from "@/lib/branches";
 import type { DoStatus } from "@/lib/types";
 
 // ---------- Auth ------------------------------------------------------
@@ -283,6 +283,54 @@ export async function moveToTrip(input: {
   revalidatePath("/deliveries");
   revalidatePath("/driver");
   revalidatePath("/orders/[id]", "page"); // a DO can belong to several SOs
+}
+
+/**
+ * Puts one trip's stops in the shortest driving order, starting and ending at
+ * the branch store (the lorry loads there and comes back for the next trip).
+ * Stops already on the road or delivered stay first, as they are.
+ */
+export async function optimiseTrip(lane: { driverId: string; date: string; tripNo: number }) {
+  const { supabase, profile } = await requireStaff();
+  const [{ data: driver }, { data: rows }] = await Promise.all([
+    supabase.from("profiles").select("branch").eq("id", lane.driverId).single(),
+    supabase
+      .from("delivery_orders")
+      .select("id, do_no, status, branch, address, geo_input, geo_lat, geo_lng, trip_seq")
+      .eq("driver_id", lane.driverId)
+      .eq("delivery_date", lane.date)
+      .eq("trip_no", lane.tripNo)
+      .eq("cancelled", false)
+      .order("trip_seq"),
+  ]);
+  const stops = rows ?? [];
+  const other = stops.find((d) => !canPlan(profile.branch, d.branch));
+  if (other) throw new Error(notYourBranch(other.branch));
+
+  const started = stops.filter((d) => d.status === "out_for_delivery" || d.status === "delivered");
+  const todo = stops.filter((d) => !started.includes(d));
+  if (todo.length < 2) throw new Error("Put at least 2 DOs that haven't left yet in this trip first.");
+
+  const branch = driver?.branch ?? todo[0].branch;
+  const store = storeAddress(branch);
+  if (!store) throw new Error(`No store address for ${branchName(branch) || "this driver's branch"} yet — add it in lib/branches.ts.`);
+
+  const route = await bestRoute(supabase, store, todo);
+  const order = [...started.map((d) => d.id), ...route.ids];
+  await Promise.all(
+    order.map((id, i) => supabase.from("delivery_orders").update({ trip_seq: i }).eq("id", id).eq("trip_no", lane.tripNo))
+  );
+
+  revalidatePath("/drivers");
+  revalidatePath("/driver");
+  const doNo = new Map(stops.map((d) => [d.id, d.do_no]));
+  return {
+    km: route.km,
+    minutes: route.minutes,
+    mapsUrl: route.mapsUrl,
+    store: branch,
+    notFound: route.notFound.map((id) => doNo.get(id)!),
+  };
 }
 
 // ---------- Delivery status (drivers + staff) ------------------------

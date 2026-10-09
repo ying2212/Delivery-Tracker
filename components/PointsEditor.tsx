@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { calculateMissingPoints, setPoints } from "@/app/actions";
 import type { DeliveryOrder } from "@/lib/types";
+import { EXTRA_STOP_POINTS } from "@/lib/commission";
 
 const WHY_MISSING: Record<string, string> = {
   not_found: "address not found on map",
@@ -13,8 +14,11 @@ const WHY_MISSING: Record<string, string> = {
 
 type Job = Pick<DeliveryOrder, "id" | "points" | "points_manual" | "distance_km" | "geo_status" | "geo_address">;
 
-/** Points chip on a DO card; click to key points in (or go back to the distance rule). */
-export function PointsEditor({ job, onEditing }: { job: Job; onEditing?: (editing: boolean) => void }) {
+/**
+ * Points chip on a DO card; click to key points in (or go back to the distance rule).
+ * `extraStop`: another DO in the same trip has the full points, so this one earns EXTRA_STOP_POINTS.
+ */
+export function PointsEditor({ job, extraStop = false, onEditing }: { job: Job; extraStop?: boolean; onEditing?: (editing: boolean) => void }) {
   const [editing, setEditingState] = useState(false);
   const [value, setValue] = useState(String(job.points ?? ""));
   const [error, setError] = useState<string | null>(null);
@@ -82,13 +86,20 @@ export function PointsEditor({ job, onEditing }: { job: Job; onEditing?: (editin
       type="button"
       draggable={false}
       onClick={() => setEditing(true)}
-      title={job.geo_address ? `Matched: ${job.geo_address}\nClick to change points` : "Click to set points"}
+      title={
+        (extraStop ? `Extra stop in this trip: ${EXTRA_STOP_POINTS} pt (${job.points} pts if it were the only DO)\n` : "") +
+        (job.geo_address ? `Matched: ${job.geo_address}\nClick to change points` : "Click to set points")
+      }
       className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium ${
         missing ? "bg-rose-50 text-rose-700 ring-1 ring-rose-200 ring-inset" : "bg-yellow-50 text-yellow-800"
       }`}
     >
-      ⭐ {missing ? "Set points" : `${job.points} pts`}
-      {detail && <span className="font-normal opacity-70">· {detail}</span>}
+      ⭐ {missing ? "Set points" : extraStop ? `${EXTRA_STOP_POINTS} pt` : `${job.points} pts`}
+      {extraStop ? (
+        <span className="font-normal opacity-70">· extra stop ({job.points} alone)</span>
+      ) : (
+        detail && <span className="font-normal opacity-70">· {detail}</span>
+      )}
     </button>
   );
 }

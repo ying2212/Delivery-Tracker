@@ -2,6 +2,8 @@
  * Driver commission rules — change the numbers here.
  * - Each DO is worth points: FAR_POINTS when the store → customer driving
  *   distance is over FAR_KM, else NEAR_POINTS (or what the office keyed in).
+ * - In one trip only one DO earns its full points (the one worth most); every
+ *   other DO in that trip earns EXTRA_STOP_POINTS. Keyed-in points are kept as keyed.
  * - The first POINTS_TARGET points in a day earn nothing; every point after
  *   that earns RM_PER_POINT (e.g. 11 pts = RM 5, 12 pts = RM 10).
  */
@@ -10,11 +12,41 @@ export const RM_PER_POINT = 5;
 export const FAR_KM = 20;
 export const FAR_POINTS = 3;
 export const NEAR_POINTS = 2;
+export const EXTRA_STOP_POINTS = 1;
 
 export const pointsForKm = (km: number) => (km > FAR_KM ? FAR_POINTS : NEAR_POINTS);
 
 /** RM earned for one day's points. */
 export const commissionForDay = (points: number) => Math.max(0, points - POINTS_TARGET) * RM_PER_POINT;
+
+type TripRow = {
+  id: string;
+  driver_id: string | null;
+  delivery_date: string;
+  trip_no: number;
+  points: number | null;
+  points_manual: boolean;
+};
+
+/**
+ * The points each DO really earns once the trip rule is applied: `points` is
+ * replaced, `extraStop` marks DOs cut to EXTRA_STOP_POINTS. Pass the DOs that
+ * count (e.g. only delivered ones for commission).
+ */
+export function withTripPoints<T extends TripRow>(rows: T[]): (T & { extraStop: boolean })[] {
+  const full = new Map<string, string>(); // trip → id of the DO that keeps full points
+  for (const r of rows) {
+    if (r.points_manual || r.points == null || !r.driver_id) continue;
+    const trip = `${r.driver_id}|${r.delivery_date}|${r.trip_no}`;
+    const best = rows.find((x) => x.id === full.get(trip));
+    if (!best || r.points > best.points!) full.set(trip, r.id);
+  }
+  return rows.map((r) => {
+    if (r.points_manual || r.points == null || !r.driver_id) return { ...r, extraStop: false };
+    const extraStop = full.get(`${r.driver_id}|${r.delivery_date}|${r.trip_no}`) !== r.id && r.points > EXTRA_STOP_POINTS;
+    return { ...r, points: extraStop ? EXTRA_STOP_POINTS : r.points, extraStop };
+  });
+}
 
 /** Groups delivered DOs by Malaysian calendar day of delivery. */
 export function dayTotals(rows: { delivered_at: string | null; points: number | null }[]) {

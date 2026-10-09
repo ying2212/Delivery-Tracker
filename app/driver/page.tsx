@@ -3,7 +3,7 @@ import { fmtDate, todayMY } from "@/lib/format";
 import type { DeliveryOrder } from "@/lib/types";
 import { JobCard } from "@/components/JobCard";
 import { CommissionBar } from "@/components/CommissionBar";
-import { dayTotals } from "@/lib/commission";
+import { dayTotals, withTripPoints } from "@/lib/commission";
 import { signOut } from "../actions";
 import Link from "next/link";
 
@@ -27,13 +27,13 @@ export default async function DriverPage({ searchParams }: { searchParams: Promi
   dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
   const { data: deliveredRows } = await supabase
     .from("delivery_orders")
-    .select("delivered_at, points")
+    .select("id, driver_id, delivery_date, trip_no, delivered_at, points, points_manual")
     .eq("driver_id", user.id)
     .eq("status", "delivered")
     .eq("cancelled", false)
     .gte("delivered_at", `${date}T00:00:00+08:00`)
     .lt("delivered_at", dayEnd.toISOString());
-  const day = dayTotals(deliveredRows ?? []).get(date) ?? { delivered: 0, points: 0, missingPoints: 0 };
+  const day = dayTotals(withTripPoints(deliveredRows ?? [])).get(date) ?? { delivered: 0, points: 0, missingPoints: 0 };
 
   const { data } = await supabase
     .from("delivery_orders")
@@ -45,7 +45,8 @@ export default async function DriverPage({ searchParams }: { searchParams: Promi
     .order("trip_seq")
     .order("created_at");
   // In the order the office planned on the Driver status page: trip by trip, stop by stop.
-  const jobs = (data ?? []) as DeliveryOrder[];
+  // Points shown per DO follow the trip rule (one full-points DO per trip, the rest 1).
+  const jobs = withTripPoints((data ?? []) as DeliveryOrder[]);
   const done = jobs.filter((j) => j.status === "delivered").length;
 
   return (

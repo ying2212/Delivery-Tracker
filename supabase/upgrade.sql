@@ -84,7 +84,7 @@ create index if not exists do_sales_orders_so_no_idx on public.do_sales_orders (
 create index if not exists do_sales_orders_so_id_idx on public.do_sales_orders (so_id);
 alter table public.do_sales_orders enable row level security;
 drop policy if exists "staff all" on public.do_sales_orders;
-create policy "staff all" on public.do_sales_orders for all using (public.is_staff()) with check (public.is_staff());
+create policy "staff all" on public.do_sales_orders for all using ((select public.is_staff())) with check ((select public.is_staff()));
 grant select, insert, update, delete on public.do_sales_orders to authenticated;
 
 -- Existing app-made DOs: record their one SO as a link.
@@ -183,12 +183,39 @@ create index if not exists delivery_orders_delivered_idx
 -- ---------- Delivery orders: O/C (own collection) ---------------------
 alter table public.delivery_orders
   -- O/C = own collection (customer collects at the store). null = work it out
-  -- from "O/C" in the remarks/address; true/false = the office picked it.
-  add column if not exists own_collection boolean,
-  add column if not exists is_oc boolean generated always as (coalesce(own_collection,
-    coalesce(remarks, '') ~* '(^|[^a-z0-9])o\s*/\s*c([^a-z0-9]|$)'
-    or coalesce(address, '') ~* '(^|[^a-z0-9])o\s*/\s*c([^a-z0-9]|$)')) stored;
+  -- from "O/C" or "own collect(ion)" in the remarks/address; true/false = the office picked it.
+  add column if not exists own_collection boolean;
+-- Rebuilt each run so the detection words stay up to date (it's worked out, nothing is lost).
+alter table public.delivery_orders drop column if exists is_oc;
+alter table public.delivery_orders
+  add column is_oc boolean generated always as (coalesce(own_collection,
+    coalesce(remarks, '') ~* '(^|[^a-z0-9])(o\s*/\s*c([^a-z0-9]|$)|own\s*collect)'
+    or coalesce(address, '') ~* '(^|[^a-z0-9])(o\s*/\s*c([^a-z0-9]|$)|own\s*collect)')) stored;
 create index if not exists delivery_orders_is_oc_idx on public.delivery_orders (delivery_date) where is_oc;
+
+-- ---------- Delivery orders: map location (for best trip route) ------
+alter table public.delivery_orders
+  add column if not exists geo_lat double precision,
+  add column if not exists geo_lng double precision;
+
+-- ---------- Faster security rules -------------------------------------
+-- (select …) makes Postgres check the user's role once per query, not once per row.
+alter policy "read own or staff" on public.profiles using (id = (select auth.uid()) or (select public.is_staff()));
+alter policy "admin edits profiles" on public.profiles using ((select public.my_role()) = 'admin');
+alter policy "staff all" on public.sales_orders    using ((select public.is_staff())) with check ((select public.is_staff()));
+alter policy "staff all" on public.so_items        using ((select public.is_staff())) with check ((select public.is_staff()));
+alter policy "staff all" on public.delivery_orders using ((select public.is_staff())) with check ((select public.is_staff()));
+alter policy "staff all" on public.do_items        using ((select public.is_staff())) with check ((select public.is_staff()));
+alter policy "staff all" on public.do_sales_orders using ((select public.is_staff())) with check ((select public.is_staff()));
+alter policy "staff all" on public.status_events   using ((select public.is_staff())) with check ((select public.is_staff()));
+alter policy "driver reads own DOs" on public.delivery_orders using (driver_id = (select auth.uid()));
+alter policy "driver updates own DOs" on public.delivery_orders
+  using (driver_id = (select auth.uid())) with check (driver_id = (select auth.uid()));
+alter policy "driver reads own DO items" on public.do_items using (exists (
+  select 1 from public.delivery_orders d where d.id = do_id and d.driver_id = (select auth.uid())));
+alter policy "driver logs own events" on public.status_events with check (actor_id = (select auth.uid()) and exists (
+  select 1 from public.delivery_orders d where d.id = do_id and d.driver_id = (select auth.uid())));
+alter policy "driver reads own events" on public.status_events using (actor_id = (select auth.uid()));
 
 -- ---------- After upgrading: set users' branch and lorry number --------
 -- update profiles set branch = 'GP', lorry_no = '93' where full_name = 'Azli';

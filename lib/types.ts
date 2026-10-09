@@ -72,6 +72,8 @@ export type DeliveryOrder = {
   distance_km: number | null;
   geo_status: string | null; // ok | approx | not_found | no_store | no_address | error
   geo_address: string | null;
+  geo_lat: number | null;
+  geo_lng: number | null;
   own_collection: boolean | null; // office's O/C pick; null = auto from remarks/address
   is_oc: boolean; // O/C = customer collects at the store (no delivery)
   driver_id: string | null;

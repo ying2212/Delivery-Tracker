@@ -23,6 +23,9 @@ const DELIVERY_FILTERS = {
 };
 type DeliveryFilter = keyof typeof DELIVERY_FILTERS;
 
+const PAGE = 300; // DOs loaded at a time
+const MAX_LOADED = 3000;
+
 const PLANNABLE: DoStatus[] = ["pending", "assigned", "failed"];
 
 
@@ -44,7 +47,7 @@ function href(params: Record<string, string | undefined>) {
 export default async function DeliveriesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ from?: string; to?: string; show?: string; q?: string; oc?: string; branch?: string }>;
+  searchParams: Promise<{ from?: string; to?: string; show?: string; q?: string; oc?: string; branch?: string; xb?: string; n?: string }>;
 }) {
   const sp = await searchParams;
   const today = todayMY();
@@ -57,6 +60,8 @@ export default async function DeliveriesPage({
   const statuses = DELIVERY_FILTERS[show].statuses;
   // O/C (customer collects at the store) is hidden unless staff turn it on.
   const showOc = sp.oc === "show";
+  // Cross-branch: DOs this branch sold that another branch is delivering.
+  const crossOnly = sp.xb === "1";
   const q = (sp.q ?? "").trim();
   const term = q.replace(/[,()%*]/g, " ").trim();
   const { supabase, profile } = await requireStaff();
@@ -68,35 +73,52 @@ export default async function DeliveriesPage({
   // No dates picked = every delivery; otherwise only deliveries dated inside the range.
   // Searching a DO number looks across all dates (and branches, unless the user is kept to one) —
   // it's usually an older DO someone is asking about.
-  let query = supabase
-    .from("delivery_orders")
-    .select("*, driver:profiles!delivery_orders_driver_id_fkey(full_name, lorry_no), do_items(id), links:do_sales_orders(so_no, so_id)")
-    .eq("cancelled", false)
-    .in("status", statuses)
-    .order("delivery_date")
-    .order("created_at");
-  if (!showOc) query = query.eq("is_oc", false);
-  if (locked) query = query.or(deliveredOrSoldBy(locked));
-  if (term) query = query.ilike("do_no", `%${term}%`);
-  else {
-    if (from) query = query.gte("delivery_date", from);
-    if (to) query = query.lte("delivery_date", to);
-    // A branch sees what it delivers plus what it sold that another branch delivers (view only).
-    if (branch && !locked) query = query.or(deliveredOrSoldBy(branch));
-  }
+  // The page's filters, used for the cards and for the delivered count.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const filtered = <Q extends Record<"eq" | "in" | "or" | "ilike" | "gte" | "lte" | "neq", any>>(query: Q): Q => {
+    query = query.eq("cancelled", false).in("status", statuses);
+    if (!showOc) query = query.eq("is_oc", false);
+    if (locked) query = query.or(deliveredOrSoldBy(locked));
+    if (term) query = query.ilike("do_no", `%${term}%`);
+    else {
+      if (from) query = query.gte("delivery_date", from);
+      if (to) query = query.lte("delivery_date", to);
+      // A branch sees what it delivers; Cross-branch switches to what it sold that another branch delivers (view only).
+      if (branch && crossOnly) query = query.eq("sales_branch", branch).neq("branch", branch);
+      else if (branch) query = query.eq("branch", branch);
+    }
+    return query;
+  };
 
-  const [{ data }, { data: driverRows }] = await Promise.all([
-    query,
+  // Long ranges ("All dates") load the newest PAGE DOs; "Load more" adds the next PAGE.
+  const limit = Math.min(Math.max(Number(sp.n) || PAGE, PAGE), MAX_LOADED);
+  const [{ data, count }, { data: driverRows }] = await Promise.all([
+    filtered(
+      supabase
+        .from("delivery_orders")
+        .select("*, driver:profiles!delivery_orders_driver_id_fkey(full_name, lorry_no), do_items(id), links:do_sales_orders(so_no, so_id)", {
+          count: "exact",
+        })
+    )
+      .order("delivery_date", { ascending: false })
+      .order("created_at", { ascending: false })
+      .range(0, limit - 1),
     supabase.from("profiles").select("id, full_name, lorry_no, branch").eq("role", "driver").order("full_name"),
   ]);
-  const jobs = (data ?? []) as DeliveryOrder[];
+  // Newest were fetched first; cards still read oldest → newest.
+  const jobs = ((data ?? []) as DeliveryOrder[]).reverse();
+  const total = count ?? jobs.length;
+  const capped = total > jobs.length;
+  // Delivered count across everything matching, not just the loaded DOs.
+  const done = capped
+    ? ((await filtered(supabase.from("delivery_orders").select("id", { count: "exact", head: true })).eq("status", "delivered")).count ?? 0)
+    : jobs.filter((j) => j.status === "delivered").length;
   const drivers = (driverRows ?? []) as Pick<Profile, "id" | "full_name" | "lorry_no" | "branch">[];
   // The delivering branch's own drivers; everyone when that branch has none set up.
   const driversFor = (b: string | null) => {
     const own = drivers.filter((d) => d.branch === b);
     return own.length ? own : drivers;
   };
-  const done = jobs.filter((j) => j.status === "delivered").length;
 
   const isToday = from === today && to === today;
   const isAllDates = !from && !to;
@@ -104,6 +126,7 @@ export default async function DeliveriesPage({
   const keep = {
     show: show || undefined,
     oc: showOc ? "show" : undefined,
+    xb: crossOnly ? "1" : undefined,
     branch: sp.branch,
   };
   const dateParams = isToday ? {} : { from, to };
@@ -116,16 +139,21 @@ export default async function DeliveriesPage({
       : isAllDates
         ? "All dates"
         : `${from ? fmtDate(from) : "…"} – ${to ? fmtDate(to) : "…"}`;
-  const branchLabel = term && !locked ? "" : branch ? `${branch} branch · ` : "All branches · ";
+  const branchLabel =
+    term && !locked ? "" : !branch ? "All branches · " : crossOnly ? `${branch} cross-branch (delivered by other branches) · ` : `${branch} branch · `;
 
   return (
     <div className="space-y-4">
-      <RealtimeRefresh table="delivery_orders" />
+      {/* Only changes to this branch's DOs refresh the page (a DO search or All branches hears every change). */}
+      <RealtimeRefresh
+        table="delivery_orders"
+        filter={term || !branch ? undefined : crossOnly ? `sales_branch=eq.${branch}` : `branch=eq.${branch}`}
+      />
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Deliveries</h1>
           <p className="text-sm text-slate-500">
-            {branchLabel}{rangeLabel} · {done} of {jobs.length} delivered · updates live
+            {branchLabel}{rangeLabel} · {done} of {total.toLocaleString()} delivered · updates live
           </p>
         </div>
         <Link href="/deliveries/new" className="btn-primary">+ Special DO</Link>
@@ -151,6 +179,17 @@ export default async function DeliveriesPage({
         >
           {showOc ? "Showing O/C" : "Show O/C"}
         </Link>
+
+        {branch && (
+          <Link
+            href={href({ ...keep, xb: crossOnly ? undefined : "1", ...dateParams })}
+            aria-pressed={crossOnly}
+            title={`DOs ${branch} sold that another branch is delivering`}
+            className={`${TAB} border ${crossOnly ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 text-slate-500 hover:text-slate-900"} ${term ? "opacity-50" : ""}`}
+          >
+            Cross-branch
+          </Link>
+        )}
 
         <div className={`flex flex-wrap items-center gap-2 ${term ? "opacity-50" : ""}`}>
           <nav className="flex rounded-lg bg-slate-100 p-0.5">
@@ -246,6 +285,26 @@ export default async function DeliveriesPage({
             );
           })}
         </div>
+
+      {capped && (
+        <p className="pb-4 text-center text-sm text-slate-500">
+          Showing newest {jobs.length.toLocaleString()} of {total.toLocaleString()} DOs
+          {limit < MAX_LOADED ? (
+            <>
+              {" · "}
+              <Link
+                href={href({ ...keep, ...dateParams, q: q || undefined, n: String(limit + PAGE) })}
+                scroll={false}
+                className="font-medium text-brand-700 hover:underline"
+              >
+                Load {Math.min(PAGE, total - jobs.length)} more
+              </Link>
+            </>
+          ) : (
+            " · narrow the dates to see older ones"
+          )}
+        </p>
+      )}
     </div>
   );
 }

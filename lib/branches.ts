@@ -15,7 +15,7 @@ export const BRANCHES = [
   {
     // TODO: Pandan store address — until it's set, PD deliveries need points keyed in on Driver status.
     code: "PD", name: "Pandan", doPrefix: "PDD", soPrefix: "PDS", locations: ["PD", "PDS"],
-    store: null,
+    store: "Jalan Kangkar Tebrau, Kangkar Tebrau Baru, 81100 Johor Bahru, Johor Darul Ta'zim",
   },
   {
     code: "KS", name: "Kempas", doPrefix: "KSD", soPrefix: "KSS", locations: ["KP", "KS", "KSS"],

@@ -1,17 +1,19 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import { moveToTrip } from "@/app/actions";
+import { moveToTrip, optimiseTrip } from "@/app/actions";
 import { DoBadge } from "./StatusBadge";
 import { BranchTags, SoLinks } from "./DocLinks";
 import { PointsEditor } from "./PointsEditor";
 import { fmtDate } from "@/lib/format";
+import { withTripPoints } from "@/lib/commission";
 import type { DeliveryOrder, DoStatus } from "@/lib/types";
 
 type Driver = { id: string; full_name: string; branch: string | null; lorry_no: string | null };
 /** Delivered DOs in the shown dates (by delivery time), with points and commission. */
 export type DriverStats = { delivered: number; points: number; missingPoints: number; rm: number };
 type Lane = { driverId: string; date: string; tripNo: number };
+type RouteResult = Awaited<ReturnType<typeof optimiseTrip>>;
 
 /** Orders already on the road or delivered stay where they are. */
 const LOCKED: DoStatus[] = ["out_for_delivery", "delivered"];
@@ -38,6 +40,24 @@ export function DriverTrips({
   const [error, setError] = useState<string | null>(null);
   const [editingPoints, setEditingPoints] = useState<string | null>(null); // no dragging while typing points
   const [pending, start] = useTransition();
+  const [routes, setRoutes] = useState<Record<string, RouteResult>>({}); // best route per trip, until the trip changes
+  const [routing, setRouting] = useState<string | null>(null);
+
+  function planRoute(lane: Lane) {
+    const key = laneKey(lane);
+    setRouting(key);
+    setError(null);
+    start(async () => {
+      try {
+        const r = await optimiseTrip(lane);
+        setRoutes((all) => ({ ...all, [key]: r }));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not plan the route");
+      } finally {
+        setRouting(null);
+      }
+    });
+  }
 
   function drop(lane: Lane, beforeId: string | null) {
     const id = dragId;
@@ -56,6 +76,12 @@ export function DriverTrips({
     });
 
     const before = jobs;
+    setRoutes((all) => {
+      const next = { ...all };
+      delete next[laneKey(lane)];
+      delete next[laneKey({ driverId: moved.driver_id ?? "", date: moved.delivery_date, tripNo: moved.trip_no })];
+      return next;
+    });
     setJobs(jobs.filter((j) => j.id !== moved.id && !inLane(j, lane)).concat(target.map((j, i) => ({ ...j, trip_seq: i }))));
     setError(null);
     start(async () => {
@@ -71,6 +97,9 @@ export function DriverTrips({
   function renderLane(lane: Lane, laneJobs: DeliveryOrder[], isNew: boolean) {
     const key = laneKey(lane);
     const delivered = laneJobs.filter((j) => j.status === "delivered").length;
+    const notLeft = laneJobs.filter((j) => !LOCKED.includes(j.status)).length;
+    const extraStops = new Set(withTripPoints(laneJobs).filter((j) => j.extraStop).map((j) => j.id));
+    const route = routes[key];
     return (
       <div
         key={key}
@@ -91,6 +120,34 @@ export function DriverTrips({
           <span>{isNew ? `+ Trip ${lane.tripNo}` : `Trip ${lane.tripNo}`}</span>
           {!isNew && <span className="font-normal text-slate-400">{delivered}/{laneJobs.length} delivered</span>}
         </div>
+        {!isNew && notLeft >= 2 && (
+          <div className="px-1 pb-2">
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => planRoute(lane)}
+              title="Shortest order from the store, through every stop, and back to the store"
+              className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:border-slate-300 disabled:opacity-50"
+            >
+              {routing === key ? "Planning route…" : "🧭 Best route"}
+            </button>
+            {route && (
+              <p className="mt-1.5 text-[11px] leading-snug text-slate-500">
+                {route.store} store → {notLeft - route.notFound.length} stops → back: <b className="text-slate-700">{route.km} km</b> · about{" "}
+                {route.minutes >= 60 ? `${Math.floor(route.minutes / 60)} h ${route.minutes % 60} min` : `${route.minutes} min`}
+                {route.mapsUrl && (
+                  <>
+                    {" · "}
+                    <a href={route.mapsUrl} target="_blank" rel="noreferrer" className="text-brand-700 hover:underline">Open in Maps</a>
+                  </>
+                )}
+                {route.notFound.length > 0 && (
+                  <span className="block text-rose-600">Address not found, put last: {route.notFound.join(", ")}</span>
+                )}
+              </p>
+            )}
+          </div>
+        )}
         <div className="flex min-h-12 flex-1 flex-col gap-2">
           {laneJobs.map((j, i) => {
             const locked = LOCKED.includes(j.status);
@@ -140,7 +197,7 @@ export function DriverTrips({
                 </div>
                 {j.instructions && <p className="line-clamp-2 rounded bg-violet-50 px-1.5 py-0.5 text-violet-800">📋 {j.instructions}</p>}
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <PointsEditor job={j} onEditing={(on) => setEditingPoints(on ? j.id : null)} />
+                  <PointsEditor job={j} extraStop={extraStops.has(j.id)} onEditing={(on) => setEditingPoints(on ? j.id : null)} />
                   <BranchTags job={j} />
                 </div>
                 {j.status === "failed" && j.failed_reason && <p className="text-rose-600">{j.failed_reason}</p>}

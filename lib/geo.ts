@@ -60,7 +60,13 @@ function storeLocation(address: string) {
 type DoRow = { id: string; address: string | null; branch: string | null; points_manual: boolean; geo_input: string | null; geo_status: string | null };
 
 async function measure(d: DoRow) {
-  const base = { geo_input: d.address, distance_km: null as number | null, geo_address: null as string | null };
+  const base = {
+    geo_input: d.address,
+    distance_km: null as number | null,
+    geo_address: null as string | null,
+    geo_lat: null as number | null,
+    geo_lng: null as number | null,
+  };
   const store = storeAddress(d.branch);
   if (!d.address?.trim()) return { ...base, geo_status: "no_address", points: null };
   if (!store) return { ...base, geo_status: "no_store", points: null };
@@ -69,7 +75,15 @@ async function measure(d: DoRow) {
     if (!from) return { ...base, geo_status: "no_store", points: null };
     if (!to) return { ...base, geo_status: "not_found", points: null };
     const km = Math.round((await drivingKm(from.at, to.at)) * 100) / 100;
-    return { ...base, distance_km: km, geo_address: to.matched, geo_status: to.approx ? "approx" : "ok", points: pointsForKm(km) };
+    return {
+      ...base,
+      distance_km: km,
+      geo_address: to.matched,
+      geo_lat: to.at.lat,
+      geo_lng: to.at.lng,
+      geo_status: to.approx ? "approx" : "ok",
+      points: pointsForKm(km),
+    };
   } catch (e) {
     console.error("Distance failed for", d.id, e);
     return { ...base, geo_status: "error", points: null };
@@ -111,4 +125,88 @@ export async function updateDistances(supabase: SupabaseClient, doIds: string[],
     );
   }
   return summary;
+}
+
+// ---------- Best route for a trip --------------------------------------
+
+/** Google allows up to 25 stops between start and end when it reorders them. */
+export const MAX_ROUTE_STOPS = 25;
+
+type Stop = { id: string; address: string | null; geo_input: string | null; geo_lat: number | null; geo_lng: number | null };
+
+/**
+ * Where each DO is on the map: the saved spot when it's from the current
+ * address, else looked up now (and saved). null = Google can't find it.
+ */
+async function locate(supabase: SupabaseClient, stops: Stop[]) {
+  return Promise.all(
+    stops.map(async (s): Promise<LatLng | null> => {
+      if (s.geo_lat != null && s.geo_lng != null && s.geo_input === s.address) return { lat: s.geo_lat, lng: s.geo_lng };
+      if (!s.address?.trim()) return null;
+      const g = await geocode(s.address).catch(() => null);
+      if (g) await supabase.from("delivery_orders").update({ geo_lat: g.at.lat, geo_lng: g.at.lng }).eq("id", s.id);
+      return g?.at ?? null;
+    })
+  );
+}
+
+/**
+ * Shortest driving order for these stops, starting and ending at the store.
+ * Returns stop ids in the new order (stops Google can't find go last).
+ */
+export async function bestRoute(supabase: SupabaseClient, storeAddr: string, stops: Stop[]) {
+  if (!KEY) throw new Error("GOOGLE_MAPS_API_KEY is not set on the server.");
+  if (stops.length > MAX_ROUTE_STOPS) throw new Error(`Google can plan up to ${MAX_ROUTE_STOPS} stops per trip — split this trip in two.`);
+
+  const [store, spots] = await Promise.all([storeLocation(storeAddr), locate(supabase, stops)]);
+  if (!store) throw new Error("Google can't find the store address — check it in lib/branches.ts.");
+  const found = stops.map((s, i) => ({ id: s.id, at: spots[i] })).filter((s): s is { id: string; at: LatLng } => !!s.at);
+  const notFound = stops.filter((_, i) => !spots[i]).map((s) => s.id);
+  if (!found.length) throw new Error("Google can't find any of these addresses.");
+
+  const point = (p: LatLng) => ({ location: { latLng: { latitude: p.lat, longitude: p.lng } } });
+  const res = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Goog-Api-Key": KEY,
+      "X-Goog-FieldMask": "routes.optimizedIntermediateWaypointIndex,routes.distanceMeters,routes.duration",
+    },
+    body: JSON.stringify({
+      origin: point(store.at),
+      destination: point(store.at),
+      intermediates: found.map((s) => point(s.at)),
+      optimizeWaypointOrder: found.length > 1,
+      travelMode: "DRIVE",
+      routingPreference: "TRAFFIC_UNAWARE",
+    }),
+  });
+  const body = await res.json();
+  const route = body.routes?.[0];
+  if (!res.ok || !route) throw new Error(`Routes: ${body.error?.message ?? "no route found"}`);
+
+  const order: number[] = route.optimizedIntermediateWaypointIndex?.length ? route.optimizedIntermediateWaypointIndex : found.map((_, i) => i);
+  const ordered = order.map((i) => found[i]);
+  const ll = (p: LatLng) => `${p.lat},${p.lng}`;
+  // Google Maps links take up to 9 stops in between.
+  const mapsUrl =
+    ordered.length <= 9
+      ? "https://www.google.com/maps/dir/?" +
+        new URLSearchParams({
+          api: "1",
+          origin: ll(store.at),
+          destination: ll(store.at),
+          waypoints: ordered.map((s) => ll(s.at)).join("|"),
+          travelmode: "driving",
+        })
+      : null;
+
+  return {
+    ids: [...ordered.map((s) => s.id), ...notFound],
+    notFound,
+    km: Math.round(route.distanceMeters / 100) / 10,
+    minutes: Math.round(parseInt(route.duration, 10) / 60),
+    mapsUrl,
+  };
 }

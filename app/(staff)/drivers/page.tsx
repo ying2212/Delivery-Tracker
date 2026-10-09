@@ -4,7 +4,7 @@ import { dateRange, todayMY } from "@/lib/format";
 import type { DeliveryOrder, Profile } from "@/lib/types";
 import { DriverTrips, type DriverStats } from "@/components/DriverTrips";
 import { CalculatePointsButton } from "@/components/PointsEditor";
-import { dayTotals, sumDays } from "@/lib/commission";
+import { dayTotals, sumDays, withTripPoints } from "@/lib/commission";
 import { mapsEnabled } from "@/lib/geo";
 import { RealtimeRefresh } from "@/components/RealtimeRefresh";
 
@@ -43,14 +43,14 @@ export default async function DriversPage({
     end.setUTCDate(end.getUTCDate() + 1);
     const { data: deliveredRows } = await supabase
       .from("delivery_orders")
-      .select("driver_id, delivered_at, points")
+      .select("id, driver_id, delivery_date, trip_no, delivered_at, points, points_manual")
       .in("driver_id", drivers.map((d) => d.id))
       .eq("status", "delivered")
       .eq("cancelled", false)
       .gte("delivered_at", `${dates[0]}T00:00:00+08:00`)
       .lt("delivered_at", end.toISOString());
     for (const d of drivers) {
-      const mine = (deliveredRows ?? []).filter((r) => r.driver_id === d.id);
+      const mine = withTripPoints((deliveredRows ?? []).filter((r) => r.driver_id === d.id));
       if (mine.length) stats[d.id] = sumDays(dayTotals(mine));
     }
 

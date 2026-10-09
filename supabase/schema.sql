@@ -116,10 +116,12 @@ create table public.delivery_orders (
   geo_status     text,                         -- ok | approx | not_found | no_store | no_address | error
   geo_input      text,                         -- the address the distance was worked out from
   geo_address    text,                         -- what Google matched it to
-  own_collection boolean,                      -- O/C (customer collects): null = from "O/C" in remarks/address; true/false = office's pick
+  geo_lat        double precision,             -- where Google put the address (for trip routes)
+  geo_lng        double precision,
+  own_collection boolean,                      -- O/C (customer collects): null = from "O/C" / "own collect" in remarks/address; true/false = office's pick
   is_oc          boolean generated always as (coalesce(own_collection,
-                   coalesce(remarks, '') ~* '(^|[^a-z0-9])o\s*/\s*c([^a-z0-9]|$)'
-                   or coalesce(address, '') ~* '(^|[^a-z0-9])o\s*/\s*c([^a-z0-9]|$)')) stored,
+                   coalesce(remarks, '') ~* '(^|[^a-z0-9])(o\s*/\s*c([^a-z0-9]|$)|own\s*collect)'
+                   or coalesce(address, '') ~* '(^|[^a-z0-9])(o\s*/\s*c([^a-z0-9]|$)|own\s*collect)')) stored,
   driver_id      uuid references public.profiles on delete set null,
   trip_no        int not null default 1 check (trip_no > 0), -- which trip of the driver's day
   trip_seq       int not null default 0,                     -- stop order inside the trip
@@ -266,30 +268,31 @@ alter table public.do_sales_orders enable row level security;
 alter table public.status_events   enable row level security;
 
 -- Profiles: see yourself; staff see everyone; admins edit roles.
-create policy "read own or staff"   on public.profiles for select using (id = auth.uid() or public.is_staff());
-create policy "admin edits profiles" on public.profiles for update using (public.my_role() = 'admin');
+create policy "read own or staff"   on public.profiles for select using (id = (select auth.uid()) or (select public.is_staff()));
+create policy "admin edits profiles" on public.profiles for update using ((select public.my_role()) = 'admin');
 
 -- Staff (admin + dispatcher) can do everything on business tables.
-create policy "staff all" on public.sales_orders    for all using (public.is_staff()) with check (public.is_staff());
-create policy "staff all" on public.so_items        for all using (public.is_staff()) with check (public.is_staff());
-create policy "staff all" on public.delivery_orders for all using (public.is_staff()) with check (public.is_staff());
-create policy "staff all" on public.do_items        for all using (public.is_staff()) with check (public.is_staff());
-create policy "staff all" on public.do_sales_orders for all using (public.is_staff()) with check (public.is_staff());
-create policy "staff all" on public.status_events   for all using (public.is_staff()) with check (public.is_staff());
+-- (select …) makes Postgres check the role once per query, not once per row.
+create policy "staff all" on public.sales_orders    for all using ((select public.is_staff())) with check ((select public.is_staff()));
+create policy "staff all" on public.so_items        for all using ((select public.is_staff())) with check ((select public.is_staff()));
+create policy "staff all" on public.delivery_orders for all using ((select public.is_staff())) with check ((select public.is_staff()));
+create policy "staff all" on public.do_items        for all using ((select public.is_staff())) with check ((select public.is_staff()));
+create policy "staff all" on public.do_sales_orders for all using ((select public.is_staff())) with check ((select public.is_staff()));
+create policy "staff all" on public.status_events   for all using ((select public.is_staff())) with check ((select public.is_staff()));
 
 -- Drivers: only their own delivery jobs.
 create policy "driver reads own DOs" on public.delivery_orders
-  for select using (driver_id = auth.uid());
+  for select using (driver_id = (select auth.uid()));
 create policy "driver updates own DOs" on public.delivery_orders
-  for update using (driver_id = auth.uid()) with check (driver_id = auth.uid());
+  for update using (driver_id = (select auth.uid())) with check (driver_id = (select auth.uid()));
 create policy "driver reads own DO items" on public.do_items
   for select using (exists (
-    select 1 from public.delivery_orders d where d.id = do_id and d.driver_id = auth.uid()));
+    select 1 from public.delivery_orders d where d.id = do_id and d.driver_id = (select auth.uid())));
 create policy "driver logs own events" on public.status_events
-  for insert with check (actor_id = auth.uid() and exists (
-    select 1 from public.delivery_orders d where d.id = do_id and d.driver_id = auth.uid()));
+  for insert with check (actor_id = (select auth.uid()) and exists (
+    select 1 from public.delivery_orders d where d.id = do_id and d.driver_id = (select auth.uid())));
 create policy "driver reads own events" on public.status_events
-  for select using (actor_id = auth.uid());
+  for select using (actor_id = (select auth.uid()));
 
 grant usage on schema public to authenticated;
 grant select, insert, update, delete on all tables in schema public to authenticated;
